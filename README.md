@@ -62,6 +62,20 @@ Run /cm setup again after each step.
 
 `/cm setup` only reads. It never prints your key.
 
+## Is it on?
+
+Under the prompt, call-me shows one status line:
+
+| Status line | What it means |
+|---|---|
+| `☎ call-me: on · Acme` | this session can be reached through your voice agent, in the account named after the dot |
+| `☎ call-me: on a call` | a call is ringing or running for this session, or a task from a call is running or queued |
+| `☎ call-me: reconnecting…` | the connection to Talkif dropped or has not come up yet; it retries by itself |
+| `☎ call-me: off` | this session is switched off (`/cm on` turns it back on) |
+| `☎ call-me: not set up — run /cm setup` | no API key, a setup problem, or Talkif refused the key: `/cm setup` says what to fix |
+
+`/cm` starts with the same answer in one line, then the details.
+
 ## Using it
 
 **You call in.** Open the Talkif app, signed in, and call your voice agent. It knows which Claude Code sessions are connected and what each one is working on. Say what you want:
@@ -90,7 +104,7 @@ Run /cm setup again after each step.
 
 | Command | What it does |
 |---|---|
-| `/cm` | status: key, server, flow, folders, any problem, and whether this session is on |
+| `/cm` | whether this session is on and through which account, then key, server, flow, folders and any problem |
 | `/cm setup` | checks your setup and prints the next step for what is missing |
 | `/cm on` · `/cm off` | this session joins or leaves your voice agent |
 | `/cm on all` · `/cm off all` | every session on this machine |

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface, ToolCallInput } from 'claude-code'
 
 import type { TrafficEntry } from '../types'
-import { readOnlyDenial } from './read-only'
+import { CallTaskScope, readOnlyDenial } from './read-only'
 import { redactBody } from './secrets'
 import { fenceUntrusted, untrustedNote } from './untrusted'
 import {
@@ -11,6 +11,9 @@ import {
   FLOW_STEP,
   KEY_STEP,
   NO_FLOW_PROBLEM,
+  accountLabel,
+  accountNameOf,
+  cmHeadline,
   consentCheck,
   failedProbe,
   parseConsent,
@@ -22,8 +25,9 @@ import {
   hasConnectorsNode,
   refusalReason,
   resolveCredentials,
+  statusText,
 } from './config'
-import type { Check, Credentials, FlowRef } from './config'
+import type { CallMeState, Check, Credentials, FlowRef } from './config'
 
 // call_me rings the developer's phone through their Talkif voice agent (a
 // published flow with a Connectors node; backend POST /session-bridge/calls)
@@ -32,7 +36,7 @@ import type { Check, Credentials, FlowRef } from './config'
 const TOOL = 'call_me'
 // Sent as the User-Agent on every request to the backend and the bridge. Kept equal
 // to .claude-plugin/plugin.json's version: bump both together.
-export const VERSION = '0.21.1'
+export const VERSION = '0.23.0'
 const USER_AGENT = `talkif-call-me/${VERSION}`
 // Debug pane: this session's bridge traffic, newest last (`/cm traffic`; recorded only with the debug option).
 const TRAFFIC_PANE = 'call-me-traffic'
@@ -129,6 +133,7 @@ function reportProblem($: EngineInterface, problem: string) {
   if (setupProblem === problem) return
   setupProblem = problem
   $.ui.log(`call-me: ${problem}`)
+  void refreshStatus($)
 }
 
 async function statePaths($: EngineInterface) {
@@ -242,22 +247,17 @@ const refusal = (status: number, text: string): AccessRefused | undefined => {
   return reason === undefined ? undefined : new AccessRefused(reason)
 }
 
-function showPaused($: EngineInterface) {
-  const reasons = [...new Set(paused.values())]
-  $.ui.status(reasons.length ? `call-me: paused — ${reasons.join('; ')}` : undefined)
-}
-
 function pause($: EngineInterface, loop: Loop, reason: string) {
   if (paused.get(loop) === reason) return
   paused.set(loop, reason)
-  showPaused($)
+  void refreshStatus($)
   $.ui.log(`call-me: ${loop} paused: ${reason}. Checking again every 5 minutes.`)
   void trace($, 'error', loop, 'paused', reason)
 }
 
 function resume($: EngineInterface, loop: Loop) {
   if (!paused.delete(loop)) return
-  showPaused($)
+  void refreshStatus($)
   $.ui.log(`call-me: ${loop} access is back; resumed.`)
   void trace($, 'info', loop, 'resumed', 'access is back')
 }
@@ -416,14 +416,14 @@ async function poll($: EngineInterface) {
       await savePending($)
       await $.prompt.submit({ text: 'call-me: the interview call did not finish within 30 minutes. The questions are still open; ask them in the terminal instead.' })
     }
-    $.ui.status(ours.length ? 'call-me: call in progress' : 'call-me: ringing')
+    await refreshStatus($)
     return
   }
 
   pending = undefined
   await savePending($)
   await markSeen($, done.id)
-  $.ui.status(undefined)
+  await refreshStatus($)
   const t = await api($, `/calls/${done.id}/transcript`)
   const transcript = isRecord(t) && typeof t.transcript === 'string' ? t.transcript : '(no transcript returned)'
   await $.prompt.submit({
@@ -473,7 +473,10 @@ type BridgeTurn = { requestId: string; callId: string; messages: unknown[]; kind
 // One bridge per account key: the apiKey option (the "personal" bridge), or on the
 // developer path TALKIF_BRIDGE_KEY and TALKIF_<NAME>_BRIDGE_KEY for others (e.g. an
 // organization). The session registers in each, so a call in any of them reaches it.
-type Bridge = { name: string; key: string; session: string | undefined; failures: number }
+// accountName: the account's display name as the backend sends it (register answer, else
+// the consent read of /cm setup); until it does, the bridge is shown by its slot name.
+type Bridge = { name: string; key: string; session: string | undefined; failures: number; accountName?: string }
+const labelOf = (b: Bridge): string => accountLabel(b.name, b.accountName)
 const bridges: Bridge[] = []
 const personalBridge = (): Bridge | undefined => bridges.find(b => b.name === 'personal')
 
@@ -600,7 +603,9 @@ async function bridgeRegister($: EngineInterface, bridge: Bridge): Promise<boole
   }
   const body: unknown = JSON.parse(res.text)
   bridge.session = isRecord(body) && typeof body.sessionId === 'string' ? body.sessionId : undefined
-  await trace($, 'info', bridge.name, 'register', `session ${bridge.session ?? '?'}`)
+  bridge.accountName = accountNameOf(body) ?? bridge.accountName
+  await trace($, 'info', bridge.name, 'register', `session ${bridge.session ?? '?'}${bridge.accountName ? ` · ${bridge.accountName}` : ''}`)
+  await refreshStatus($)
   // A new session describes itself at once, so the call can route to it from the first minute.
   if (bridge.session && lastDescribed === 0) describeSelf($).catch(err => $.ui.log(`call-me bridge: describe failed: ${String(err)}`))
   return bridge.session !== undefined
@@ -800,6 +805,7 @@ async function bridgeAnswer($: EngineInterface, bridge: Bridge, turn: BridgeTurn
     if (!res.ok) $.ui.log(`call-me bridge (${bridge.name}): instruction ack failed (${res.status})`)
     await trace($, res.ok ? 'out' : 'error', bridge.name, 'task ack', `${res.status} · ${ack}`)
     callWork.set(turn.requestId, { requestId: turn.requestId, turnId: undefined, bridge, notify: turn.notify })
+    await refreshStatus($)
     await $.prompt.submit({ text: instructionPrompt(turn.requestId, turn.question) })
     return
   }
@@ -840,6 +846,7 @@ async function leaveBridge($: EngineInterface) {
     await trace($, 'out', bridge.name, 'left', 'switched off with /cm')
     bridge.session = undefined
   }
+  await refreshStatus($)
 }
 
 // Where the key, the backend and the flow come from, and what is wrong.
@@ -921,6 +928,12 @@ async function cmSetup($: EngineInterface): Promise<string> {
   }
   checks.push({ name: 'Backend', ok: true, detail: `${c.url} (${where})` })
   const parsed = consent.status === 200 ? parseConsent(consent.body) : undefined
+  // The consent read names the account too: shown from now on where the register answer did not.
+  const probed = bridges.find(b => b.key === bridgeKey)
+  if (parsed?.accountName && probed && !probed.accountName) {
+    probed.accountName = parsed.accountName
+    await refreshStatus($)
+  }
   checks.push(
     parsed
       ? consentCheck(parsed)
@@ -993,11 +1006,15 @@ async function cmSetup($: EngineInterface): Promise<string> {
 async function cmStatus($: EngineInterface): Promise<string> {
   const allOff = (await $.store.get('allOff')) === true
   const defaultOff = (await $.store.get('defaultOff')) === true
-  const here = (await bridgeEnabled($)) ? 'on' : 'off'
-  const joined = bridges.filter(b => b.session).map(b => b.name)
+  const setup = await setupLines($)
+  const state = await currentState($)
+  await refreshStatus($)
+  const accounts = bridges.map(b => `${labelOf(b)}${b.accountName ? ` (${b.name} key)` : ''}${b.session ? '' : ' (not connected yet)'}`)
   return [
-    ...(await setupLines($)),
-    `call-me: this session is ${here}${sessionSwitch ? ` (set here with /cm ${sessionSwitch})` : ' (following the default)'}${joined.length ? `, on the bridge for ${joined.join(', ')}` : ''}.`,
+    cmHeadline(state),
+    ...setup,
+    ...(accounts.length ? [`Accounts: ${accounts.join(', ')}`] : []),
+    `This session: ${sessionSwitch ? `set here with /cm ${sessionSwitch}` : 'following the default'}.`,
     `All sessions: ${allOff ? 'OFF (/cm on all to turn back on)' : 'on'}. New sessions start ${defaultOff ? 'off' : 'on'}.`,
     'Commands: /cm setup · /cm on | off · /cm on all | off all · /cm default on | off · /cm traffic · /cm publish · /cm latency',
   ].join('\n')
@@ -1070,6 +1087,7 @@ async function bridgePoll($: EngineInterface, bridge: Bridge) {
       throw new Error(`next → ${res.status}`)
     }
     bridge.failures = 0
+    await refreshStatus($)
     $.clock.after(0, () => void bridgePoll($, bridge))
   } catch (err) {
     if (err instanceof AccessRefused) {
@@ -1078,6 +1096,7 @@ async function bridgePoll($: EngineInterface, bridge: Bridge) {
       return
     }
     bridge.failures += 1
+    await refreshStatus($)
     const backoff = Math.min(60_000, 1_000 * 2 ** bridge.failures)
     // One dropped poll is normal on a changing network: speak up only when it keeps failing.
     if (bridge.failures === 3 || (bridge.failures > 3 && bridge.failures % 10 === 0)) {
@@ -1102,6 +1121,7 @@ const SWITCH_CHECK_MS = 2_000
 function watchSwitch($: EngineInterface) {
   $.clock.after(SWITCH_CHECK_MS, async () => {
     if (!(await bridgeEnabled($)) && bridges.some(b => b.session)) await leaveBridge($)
+    await refreshStatus($).catch(() => undefined)
     watchSwitch($)
   })
 }
@@ -1124,6 +1144,7 @@ async function ringOwner($: EngineInterface, briefing: string): Promise<Ring> {
   if (!isRecord(body) || typeof body.callId !== 'string') return { ok: false, reason: 'ring reply had no callId' }
   const ringSecs = typeof body.ringSecs === 'number' ? body.ringSecs : 30
   await markMine($, body.callId)
+  await refreshStatus($)
   await trace($, 'out', bridge.name, 'ring', `call ${body.callId.slice(0, 8)} · ${ringSecs}s`)
   return { ok: true, ringSecs, callId: body.callId }
 }
@@ -1136,11 +1157,36 @@ async function homeOf($: EngineInterface): Promise<{ home: string }> {
 // anything while a call task runs; 'session' leaves the session's own permissions.
 let callTasks: 'read-only' | 'session' = 'read-only'
 
-// A task given on a call is running in this session (set at turn.start, cleared at turn.complete).
-let voiceTurn: string | undefined
-// Subagents a call task started: read-only for good, also after the task's own turn
-// ended (one sent to the background, or woken again by a message, outlives it).
-const callAgents = new Set<string>()
+// The call task's turn of this session (set at turn.start, cleared at turn.complete) and
+// the subagents it started: read-only for good, also after the task's own turn ended
+// (one sent to the background, or woken again by a message, outlives it). Agents that
+// started outside a call task stay as they are while one runs.
+const scope = new CallTaskScope()
+
+// ---- Is it on? One status line, refreshed whenever what it shows can change ----
+
+async function currentState($: EngineInterface): Promise<CallMeState> {
+  return {
+    notSetUp: !credentials || setupProblem !== undefined || paused.size > 0,
+    off: !(await bridgeEnabled($)),
+    onCall: pending !== undefined || scope.turnId !== undefined || callWork.size > 0,
+    // Two failed polls in a row: retrying, shown as reconnecting until a poll goes through.
+    registered: bridges.filter(b => b.session && b.failures < 2).map(labelOf),
+    accounts: bridges.map(labelOf),
+  }
+}
+
+let shownStatus: string | undefined
+async function refreshStatus($: EngineInterface): Promise<void> {
+  try {
+    const text = statusText(await currentState($))
+    if (text === shownStatus) return
+    shownStatus = text
+    $.ui.status(text)
+  } catch (err) {
+    $.ui.log(`call-me: status line failed: ${String(err)}`)
+  }
+}
 
 export const register: Register = (on, options) => {
   // Plugin options (/config).
@@ -1171,8 +1217,7 @@ export const register: Register = (on, options) => {
   // files or runs more than a reader is refused here, before Claude Code's own
   // permission check. Subagents the task starts are held to the same.
   // Refusing only, never allowing: a pass goes on to the normal permission path.
-  const inCallTask = (agentId: string | undefined): boolean =>
-    callTasks === 'read-only' && (voiceTurn !== undefined || (agentId !== undefined && callAgents.has(agentId)))
+  const inCallTask = (agentId: string | undefined): boolean => callTasks === 'read-only' && scope.covers(agentId)
   const callTaskDenial = (e: ToolCallInput): string | undefined => {
     if (!inCallTask(e.agentId)) return undefined
     if (e.tool === 'Bash') return readOnlyDenial({ tool: e.tool, command: e.command, background: e.run_in_background === true })
@@ -1185,12 +1230,22 @@ export const register: Register = (on, options) => {
   // teammate or a workflow's agent (those live past the task), its id remembered so
   // its tool calls stay guarded whenever they come.
   on('agent.spawn', async ($, e, next) => {
-    if (!inCallTask(e.parentAgentId)) return next(e)
-    if (e.isTeammate || e.workflow) return { deny: 'This task came from a phone call and runs read-only: no teammates or workflows.' }
-    // A resumed run's content keys are fixed; its id is already remembered.
-    const result = await next(e.resume ? e : { ...e, background: false })
-    if (result.agentId) callAgents.add(result.agentId)
-    return result
+    const covered = callTasks === 'read-only' && scope.spawnStarted(e.parentAgentId)
+    let agentId: string | undefined
+    try {
+      if (!covered) {
+        const result = await next(e)
+        agentId = result.agentId
+        return result
+      }
+      if (e.isTeammate || e.workflow) return { deny: 'This task came from a phone call and runs read-only: no teammates or workflows.' }
+      // A resumed run's content keys are fixed; its id is already remembered.
+      const result = await next(e.resume ? e : { ...e, background: false })
+      agentId = result.agentId
+      return result
+    } finally {
+      scope.spawnSettled(covered, agentId)
+    }
   }).catch(($, e, next) => {
     // Failed before the spawn: outside a call task it goes ahead; inside one it does not start unguarded.
     if (next.called) return next(e)
@@ -1217,8 +1272,9 @@ export const register: Register = (on, options) => {
   // call (or the ring-back) hears what it is waiting for.
   on('tool.check', async ($, e, next) => {
     const result = await next(e)
-    if (result.decision !== 'ask' || !voiceTurn || e.agentId) return result
-    const work = [...callWork.values()].find(w => w.turnId === voiceTurn)
+    const turnId = scope.turnId
+    if (result.decision !== 'ask' || !turnId || e.agentId) return result
+    const work = [...callWork.values()].find(w => w.turnId === turnId)
     const what = isRecord(e.input) && typeof e.input.command === 'string' ? `${e.tool}: ${e.input.command}` : e.tool
     if (work) {
       const note = `Waiting for permission to run ${what}. Allow it at the terminal, or add it to Claude Code's permission rules.`
@@ -1281,6 +1337,7 @@ export const register: Register = (on, options) => {
         .then(() => {
           pollFailures = 0
           resume($, 'calls')
+          return refreshStatus($)
         })
         .catch(err => {
           if (err instanceof AccessRefused) {
@@ -1288,7 +1345,7 @@ export const register: Register = (on, options) => {
             pause($, 'calls', err.message)
             return
           }
-          if (err instanceof SetupProblem) return // shown once already; /cm status repeats it
+          if (err instanceof SetupProblem) return refreshStatus($) // shown once already; /cm status repeats it
           pollFailures += 1
           if (pollFailures === 1 || pollFailures % 20 === 0) $.ui.log(`call-me: poll failed (${pollFailures}x): ${String(err)}`)
         })
@@ -1334,7 +1391,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" gap={2} marginBottom={1}>
           {bridges.length === 0 && <Text dimColor>no bridge configured</Text>}
           {bridges.map(b => (
-            <Text color={b.session ? 'green' : 'yellow'}>{`● ${b.name} ${b.session ? b.session.slice(0, 8) : 'not registered'}`}</Text>
+            <Text color={b.session ? 'green' : 'yellow'}>{`● ${labelOf(b)} ${b.session ? b.session.slice(0, 8) : 'not registered'}`}</Text>
           ))}
           <Text dimColor>◀ from bridge  ▶ to bridge  ● state  ✖ error</Text>
         </Box>
@@ -1370,18 +1427,20 @@ export const register: Register = (on, options) => {
     // A marked turn is a call task even when a reload lost its callWork entry: it stays read-only.
     // A typed prompt after it means that task is over (one prompt runs at a time); an empty
     // continuation keeps the state it had.
-    if (!e.agentId && mark) voiceTurn = e.turnId
-    else if (!e.agentId && e.text.trim()) voiceTurn = undefined
+    if (!e.agentId && mark) scope.startTurn(e.turnId)
+    else if (!e.agentId && e.text.trim()) scope.endTurn()
+    if (!e.agentId) await refreshStatus($)
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId) return result // a subagent's run, not this session's turn
-    if (voiceTurn === e.turnId) voiceTurn = undefined
+    scope.endTurn(e.turnId)
     const work = [...callWork.values()].find(w => w.turnId === e.turnId)
+    if (work) callWork.delete(work.requestId)
+    await refreshStatus($)
     if (work) {
-      callWork.delete(work.requestId)
       const kind = e.reason === 'answer' ? 'done' : 'blocked'
       const text = e.answer.trim() || (kind === 'done' ? 'Finished.' : `Stopped (${e.reason}).`)
       bridgeEvent($, work.bridge, kind, text)

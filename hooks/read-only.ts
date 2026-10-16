@@ -241,3 +241,59 @@ export const readOnlyDenial = (call: GuardedCall): string | undefined => {
     'and say exactly what you would change, so the developer can approve it in the terminal.'
   )
 }
+
+/**
+ * Which loops a call task covers. The session's own turn while a call task runs,
+ * and the subagents that turn (or one of its subagents) starts: those stay covered
+ * after the turn ends, as a background one outlives it. A subagent started before
+ * the call task, by the developer, or by another agent outside it is never covered,
+ * even while a call task runs in the same session.
+ */
+export class CallTaskScope {
+  private turn: string | undefined
+  // Started by a call task: covered for good.
+  private readonly covered = new Set<string>()
+  // Started outside a call task: never covered.
+  private readonly free = new Set<string>()
+  // Spawns a call task asked for that have not answered their id yet. An agent
+  // this scope has never seen is held to the guard meanwhile, so a subagent's
+  // first tool call can never run before its id is known.
+  private spawning = 0
+
+  /** The call task's turn of the session, if one runs. */
+  get turnId(): string | undefined {
+    return this.turn
+  }
+
+  startTurn(turnId: string): void {
+    this.turn = turnId
+  }
+
+  /** The turn ended (turnId) or a typed prompt replaced it (no id). */
+  endTurn(turnId?: string): void {
+    if (turnId === undefined || this.turn === turnId) this.turn = undefined
+  }
+
+  /** Whether a tool call or spawn in this loop (undefined: the session's own) is covered. */
+  covers(agentId: string | undefined): boolean {
+    if (agentId === undefined) return this.turn !== undefined
+    if (this.covered.has(agentId)) return true
+    if (this.free.has(agentId)) return false
+    return this.spawning > 0
+  }
+
+  /** A spawn in `parentAgentId` begins; answers whether it is covered (pass it to spawnSettled). */
+  spawnStarted(parentAgentId: string | undefined): boolean {
+    const covered = this.covers(parentAgentId)
+    if (covered) this.spawning++
+    return covered
+  }
+
+  /** The spawn answered (agentId undefined: refused or failed). */
+  spawnSettled(covered: boolean, agentId: string | undefined): void {
+    if (covered) this.spawning = Math.max(0, this.spawning - 1)
+    if (agentId === undefined) return
+    if (covered) this.covered.add(agentId)
+    else if (!this.covered.has(agentId)) this.free.add(agentId)
+  }
+}

@@ -177,6 +177,8 @@ export function refusalReason(status: number, text: string): string | undefined 
 /** GET /connectors/consent, the fields setup reads. */
 export type Consent = {
   accepted: boolean
+  /** The account's display name; absent from backends that do not send it. */
+  accountName: string | undefined
   acceptedByName: string | undefined
   termsVersion: string | undefined
   currentTermsVersion: string | undefined
@@ -189,6 +191,7 @@ export function parseConsent(body: unknown): Consent | undefined {
   if (!isRecord(body) || typeof body.accepted !== 'boolean') return undefined
   return {
     accepted: body.accepted,
+    accountName: optString(body.accountName),
     acceptedByName: optString(body.acceptedByName),
     termsVersion: optString(body.termsVersion),
     currentTermsVersion: optString(body.currentTermsVersion),
@@ -222,7 +225,7 @@ export function failedProbe(name: string, scope: string, status: number, text: s
 export function consentCheck(consent: Consent): Check {
   const name = 'Connectors'
   if (consent.accepted) {
-    return { name, ok: true, detail: `turned on for this account${consent.acceptedByName ? ` (by ${consent.acceptedByName})` : ''}` }
+    return { name, ok: true, detail: `turned on for ${consent.accountName ? `the account ${consent.accountName}` : 'this account'}${consent.acceptedByName ? ` (by ${consent.acceptedByName})` : ''}` }
   }
   if (consent.withdrawnAt) {
     return { name, ok: false, detail: `turned off by an owner or admin on ${consent.withdrawnAt.slice(0, 10)}`, next: CONNECTORS_STEP }
@@ -245,4 +248,47 @@ export function setupReport(checks: readonly Check[]): string {
     lines.push('Run /cm setup again after each step.')
   }
   return lines.join('\n')
+}
+
+// ---- Is it on? The status line and the first line of /cm ----
+
+/** The account name the backend sends (register answer, consent read); undefined when it sends none. */
+export const accountNameOf = (body: unknown): string | undefined =>
+  isRecord(body) ? optString(typeof body.accountName === 'string' ? body.accountName.trim() : undefined) : undefined
+
+/** What a bridge is shown as: the account's name, else the name of its key slot (personal, org, …). */
+export const accountLabel = (slot: string, accountName: string | undefined): string => accountName ?? slot
+
+/** What the status line and /cm read. */
+export type CallMeState = {
+  /** No key, a setup problem (bad URL, no Connectors flow) or access refused. */
+  notSetUp: boolean
+  /** This session is switched off (/cm off, off all, default off). */
+  off: boolean
+  /** An interview ringing or in progress, a call task running, or call tasks queued. */
+  onCall: boolean
+  /** The accounts this session is registered in, as accountLabel shows them. */
+  registered: readonly string[]
+  /** Every account this session joins (registered or not yet), as accountLabel shows them. */
+  accounts: readonly string[]
+}
+
+/**
+ * The status line; the first matching state wins: not set up, off, on a call,
+ * reconnecting (no account registered yet, or every one retrying), on.
+ */
+export function statusText(state: CallMeState): string {
+  if (state.notSetUp) return '☎ call-me: not set up — run /cm setup'
+  if (state.off) return '☎ call-me: off'
+  if (state.onCall) return '☎ call-me: on a call'
+  if (state.registered.length === 0) return '☎ call-me: reconnecting…'
+  return `☎ call-me: on · ${state.registered.join(', ')}`
+}
+
+/** The first line of /cm, in the same order as statusText. */
+export function cmHeadline(state: CallMeState): string {
+  if (state.notSetUp) return 'Not set up — run /cm setup.'
+  if (state.off) return 'Off — turn it on with /cm on.'
+  const names = state.registered.length ? state.registered : state.accounts
+  return names.length ? `On — this session can be reached through ${names.join(', ')} (Talkif).` : 'On — this session can be reached through Talkif.'
 }

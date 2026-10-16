@@ -192,6 +192,9 @@ test('setup: the consent answer becomes a check with its next step', async () =>
   // The shape of GET /api/v1/connectors/consent (camelCase).
   const on = parseConsent({ accepted: true, acceptedAt: '2026-10-15T10:00:00Z', acceptedByName: 'Ada', termsVersion: 'connectors-2026-10', currentTermsVersion: 'connectors-2026-10', withdrawnAt: null, available: true, experimental: true })
   expect(on && consentCheck(on)).toEqual({ name: 'Connectors', ok: true, detail: 'turned on for this account (by Ada)' })
+  const named = parseConsent({ accepted: true, accountName: 'Acme Support', acceptedByName: 'Ada' })
+  expect(named?.accountName).toBe('Acme Support')
+  expect(named && consentCheck(named).detail).toBe('turned on for the account Acme Support (by Ada)')
   const never = parseConsent({ accepted: false, acceptedAt: null, acceptedByName: null, termsVersion: null, currentTermsVersion: 'connectors-2026-10', withdrawnAt: null })
   expect(never && consentCheck(never).next).toBe(CONNECTORS_STEP)
   const off = parseConsent({ accepted: false, termsVersion: 'connectors-2026-10', currentTermsVersion: 'connectors-2026-10', withdrawnAt: '2026-10-16T08:00:00Z' })
@@ -216,4 +219,95 @@ test('setup: refused probes name the missing scope; the report leads with the fi
   expect(report).toContain(`Next step: ${CONNECTORS_STEP}`)
   expect(report).toContain(`Then: ${FLOW_STEP}`)
   expect(setupReport([{ name: 'API key', ok: true, detail: 'x' }])).toMatch(/All set/)
+})
+
+import { accountLabel, accountNameOf, cmHeadline, statusText } from '../hooks/config'
+import type { CallMeState } from '../hooks/config'
+
+const state = (over: Partial<CallMeState>): CallMeState => ({ notSetUp: false, off: false, onCall: false, registered: ['Acme'], accounts: ['Acme'], ...over })
+
+test('status line: one text per state, the first match wins', async () => {
+  expect(statusText(state({}))).toBe('☎ call-me: on · Acme')
+  expect(statusText(state({ registered: ['Acme', 'Beta Org'], accounts: ['Acme', 'Beta Org'] }))).toBe('☎ call-me: on · Acme, Beta Org')
+  expect(statusText(state({ registered: [] }))).toBe('☎ call-me: reconnecting…')
+  expect(statusText(state({ onCall: true }))).toBe('☎ call-me: on a call')
+  expect(statusText(state({ off: true }))).toBe('☎ call-me: off')
+  expect(statusText(state({ notSetUp: true }))).toBe('☎ call-me: not set up — run /cm setup')
+  // Precedence: not set up > off > on a call > reconnecting > on.
+  expect(statusText(state({ notSetUp: true, off: true, onCall: true, registered: [] }))).toMatch(/not set up/)
+  expect(statusText(state({ off: true, onCall: true, registered: [] }))).toBe('☎ call-me: off')
+  expect(statusText(state({ onCall: true, registered: [] }))).toBe('☎ call-me: on a call')
+})
+
+test('account names: the backend\'s name, else the key slot', async () => {
+  expect(accountNameOf({ sessionId: 's1', accountName: ' Acme ' })).toBe('Acme')
+  expect(accountNameOf({ sessionId: 's1' })).toBe(undefined)
+  expect(accountNameOf({ accountName: '' })).toBe(undefined)
+  expect(accountNameOf({ accountName: 7 })).toBe(undefined)
+  expect(accountNameOf(undefined)).toBe(undefined)
+  expect(accountLabel('personal', 'Acme')).toBe('Acme')
+  expect(accountLabel('personal', undefined)).toBe('personal')
+  expect(statusText(state({ registered: [accountLabel('org', undefined)] }))).toBe('☎ call-me: on · org')
+})
+
+test('/cm leads with one line: on, off or not set up', async () => {
+  expect(cmHeadline(state({}))).toBe('On — this session can be reached through Acme (Talkif).')
+  expect(cmHeadline(state({ onCall: true }))).toBe('On — this session can be reached through Acme (Talkif).')
+  // Not registered yet: the accounts it joins.
+  expect(cmHeadline(state({ registered: [], accounts: ['personal', 'org'] }))).toBe('On — this session can be reached through personal, org (Talkif).')
+  expect(cmHeadline(state({ registered: [], accounts: [] }))).toBe('On — this session can be reached through Talkif.')
+  expect(cmHeadline(state({ off: true }))).toBe('Off — turn it on with /cm on.')
+  expect(cmHeadline(state({ notSetUp: true, off: true }))).toBe('Not set up — run /cm setup.')
+})
+
+import { CallTaskScope } from '../hooks/read-only'
+
+test('call tasks: only the task\'s own turn and the agents it starts are read-only', async () => {
+  const scope = new CallTaskScope()
+  // An agent the developer started before any call.
+  const before = scope.spawnStarted(undefined)
+  expect(before).toBe(false)
+  scope.spawnSettled(before, 'bg-before')
+  expect(scope.covers(undefined)).toBe(false)
+
+  scope.startTurn('t1')
+  expect(scope.covers(undefined)).toBe(true)
+  // The background agent from before keeps its own permissions while the call task runs.
+  expect(scope.covers('bg-before')).toBe(false)
+  // The call task starts one: covered, and so is the agent that one starts.
+  const fromTask = scope.spawnStarted(undefined)
+  expect(fromTask).toBe(true)
+  // Before the spawn answers its id, an agent never seen is held to the guard...
+  expect(scope.covers('unknown')).toBe(true)
+  // ...but one known to be outside the task is not.
+  expect(scope.covers('bg-before')).toBe(false)
+  scope.spawnSettled(fromTask, 'task-agent')
+  expect(scope.covers('unknown')).toBe(false)
+  const nested = scope.spawnStarted('task-agent')
+  expect(nested).toBe(true)
+  scope.spawnSettled(nested, 'task-grandchild')
+  // An agent the background agent starts during the call stays free.
+  const side = scope.spawnStarted('bg-before')
+  expect(side).toBe(false)
+  scope.spawnSettled(side, 'bg-child')
+  expect(scope.covers('bg-child')).toBe(false)
+
+  // Another turn's end leaves it; its own end clears it.
+  scope.endTurn('t0')
+  expect(scope.covers(undefined)).toBe(true)
+  scope.endTurn('t1')
+  expect(scope.covers(undefined)).toBe(false)
+  // The task's agents stay read-only after the task's turn (one may run on in the background).
+  expect(scope.covers('task-agent')).toBe(true)
+  expect(scope.covers('task-grandchild')).toBe(true)
+  expect(scope.covers('bg-before')).toBe(false)
+  // A typed prompt ends a call task too.
+  scope.startTurn('t2')
+  scope.endTurn()
+  expect(scope.covers(undefined)).toBe(false)
+  // A refused spawn records nothing and releases the hold.
+  scope.startTurn('t3')
+  const refused = scope.spawnStarted(undefined)
+  scope.spawnSettled(refused, undefined)
+  expect(scope.covers('later')).toBe(false)
 })

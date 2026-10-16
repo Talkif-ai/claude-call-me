@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0 — 2026-10-17
+
+- **Is it on?** A status line under the prompt always says: `on · <account>`, `on a call`, `reconnecting…`, `off`, or `not set up — run /cm setup`. See "Is it on?" in the README.
+- The account is shown by its name in Talkif (status line, `/cm`, `/cm setup`, traffic pane). Older servers that do not send the name show the key's slot name (`personal`) instead.
+- `/cm` starts with one line: on and through which account, off, or not set up. The details follow.
+- **Fix:** read-only mode for tasks from a call no longer reaches agents that were started outside that task (by you, or before the call). Only the task itself and the agents it starts are read-only.
+- **Fix:** the User-Agent now carries the plugin's real version (it said 0.21.1 in 0.22.0).
+
 ## 0.22.0 — 2026-10-16
 
 - **The `environment` option is gone.** call-me always connects to Talkif (https://api.talkif.ai). A new optional **API URL (advanced)** option (`apiUrl`) takes another address; leave it empty unless Talkif support tells you otherwise. An address that is not `http://` or `https://` is reported by `/cm setup` instead of being ignored.
