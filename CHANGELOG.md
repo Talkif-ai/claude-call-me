@@ -1,0 +1,154 @@
+# Changelog
+
+## 0.22.0 — 2026-10-16
+
+- **The `environment` option is gone.** call-me always connects to Talkif (https://api.talkif.ai). A new optional **API URL (advanced)** option (`apiUrl`) takes another address; leave it empty unless Talkif support tells you otherwise. An address that is not `http://` or `https://` is reported by `/cm setup` instead of being ignored.
+- **Breaking for the connector scripts:** `--env` is removed; pass `--url URL` (or set `TALKIF_API_URL`) for another backend. `--env-file PATH` still picks the developer file.
+- The developer file is now `~/.config/talkif/dev.env`; its `TALKIF_API_URL` is optional (empty means Talkif), and the `apiUrl` option beats it.
+
+## 0.21.1 — 2026-10-16
+
+- README rewritten for new users: what call-me is, what you need first, setup in 3 steps with the expected `/cm setup` output, spoken examples, safety, commands, options and troubleshooting.
+- Plugin and marketplace descriptions are one plain sentence; the marketplace owner is Talkif.
+- The `debug` option's description names `/cm traffic` (the old `/call-me-traffic` name is gone).
+- Internal details removed from code comments, tests and this changelog. Test secrets are obviously fake.
+
+## 0.21.0 — 2026-10-16
+
+- New `/cm setup`: checks your API key, the connection to Talkif, whether Connectors are turned on for your account, the key's scopes and the flow your calls use, and prints the next step for the first thing missing. It only reads and never prints the key.
+- The connector scripts (knowledge folder, launcher, local agent) use Talkif by default, take `--url` for another backend, and read the key from `$TALKIF_API_KEY` (or `--key-env VAR`).
+- **Breaking for the scripts:** a developer file path goes in `--env-file`. `--key VAR` still works as the old name of `--key-env`.
+- The launcher no longer passes its key to the Claude Code runs it starts, and `--cwd` defaults to the current folder.
+
+## 0.20.0 — 2026-10-16
+
+- Set up from the plugin options: `apiKey` (kept in the keychain), `environment`, `flowId` and `folders`.
+- With `flowId` empty, the plugin picks the first published flow with a Connectors node and remembers it.
+- Every session can join (before, only sessions in one fixed folder). The `folders` option limits it.
+- Clear setup messages for a missing key, a missing scope, Connectors not turned on, and no Connectors flow.
+
+## 0.19.3 — 2026-10-15
+
+- Read-only call tasks: credential files can no longer be reached through shell wildcards, braces, `..` or git revision paths (`git show HEAD:.env`). More credential locations are covered (`~/.kube`, `~/.docker`, `~/.gnupg`, `~/.config/gh`, `secrets/`, `*.env`, `.npmrc`, `.pypirc`, SSH keys).
+- Text from a call can no longer close the fence around it with spaced or HTML-escaped tags.
+- The connector scripts send the `talkif-call-me/<version>` User-Agent too.
+
+## 0.19.2 — 2026-10-15
+
+- A finished call's transcript now runs as a call task, so read-only mode applies to it.
+- Text from calls (transcripts, call notes, relayed questions) reaches the model marked as untrusted data, never as instructions.
+- Read-only call tasks do not read credential files (`~/.ssh`, `~/.aws`, `.env` files, keys and similar).
+- Requests send a `talkif-call-me/<version>` User-Agent.
+
+## 0.19.1 — 2026-10-15
+
+- Read-only call tasks are an allowlist: only reading tools work; everything else (web fetches, MCP tools, publishes, messages, schedules) is refused.
+- Call tasks cannot escape read-only mode through background commands, remote agents or subagents.
+- Text that looks like a secret is replaced with `[redacted]` in everything the plugin sends.
+
+## 0.19.0 — 2026-10-15
+
+- Tasks from a call run read-only by default. New option `callTasks`: `read-only` or `session` (the session's own permissions).
+- The voice agent and sessions are told never to say secrets.
+- Connectors have an audience: coding sessions and the launcher are private; a knowledge folder takes `--audience private|team|public`.
+- Debug, parallel and callback settings moved to the plugin options.
+
+## 0.18.0 — 2026-10-14
+
+- Experimental local agent (`connectors/agent.mjs`) that holds a WebSocket per session instead of long polling. Not needed.
+- `/cm off all` takes effect within about 2 seconds.
+
+## 0.17.0 — 2026-10-14
+
+- Coding sessions are private: teammates cannot reach them.
+- Commands moved under `/cm`: `/cm traffic`, `/cm publish`, `/cm latency`.
+- `/cm publish` writes the call instructions into the flow's Connectors node.
+
+## 0.16.1 — 2026-10-14
+
+- Say how you want a late result ("call me when it's done" or "just tell me next time") and the agent remembers it.
+
+## 0.16.0 — 2026-10-14
+
+- Summaries of your last three calls reach every session.
+- Sessions refresh their recap when a call starts.
+- When it is unclear which session a request is for, the best-fitting session takes it.
+
+## 0.15.0 — 2026-10-14
+
+- The plugin never grants a permission. A call task waiting at a permission prompt tells you on the call, or rings you.
+
+## 0.14.0 — 2026-10-14
+
+- Plugin options: `debug`, `parallel`, `callback`.
+
+## 0.13.0 — 2026-10-14
+
+- `/cm` turns call-me on or off for this session, all sessions, or new sessions.
+
+## 0.12.0 — 2026-10-14
+
+- Ring-back: a task from a call that finishes or gets stuck after you hung up rings you with the result.
+
+## 0.11.0 — 2026-10-14
+
+- The voice agent says in one sentence what task it sends, and sends it without asking for confirmation.
+
+## 0.10.0 — 2026-10-14
+
+- A request that names a session ("the docs session") goes straight to it.
+- Clearer call instructions for the voice agent.
+
+## 0.9.0 — 2026-10-13
+
+- Better call behaviour: "pass it" sends at once, misheard names are understood, no repeats, the agent speaks your language.
+
+## Connector scripts
+
+- `connectors/knowledge-folder.mjs`: answers questions from a folder of documents.
+- `connectors/launcher.mjs`: answers questions with a read-only Claude Code run (plan mode).
+
+## 0.8.0 — 2026-10-13
+
+- Debug pane showing this session's call-me traffic live.
+
+## 0.7.0 — 2026-10-13
+
+- The session confirms a question the moment it arrives, so the agent can say it is working on it; a slow answer arrives as a note.
+- Several questions are handled at once.
+- While a task runs, a new one is declined ("still on the last task"), or queued with the `parallel` option.
+
+## 0.6.1 — 2026-10-13
+
+- The voice agent never asks you which session you mean.
+
+## 0.6.0 — 2026-10-13
+
+- Sessions describe themselves by their git repository, so the agent can route by project.
+
+## 0.5.0 — 2026-10-13
+
+- When the agent cannot tell which session a request is for, the session it fits takes it.
+
+## 0.4.0 — 2026-10-13
+
+- A session can join several Talkif accounts at once.
+
+## 0.3.3 — 2026-10-13
+
+- A single dropped connection no longer prints a message.
+
+## 0.3.2 — 2026-10-13
+
+- Session recaps cost much less and refresh every 15 minutes.
+- The call hangs up as soon as you say to close it.
+
+## 0.3.1 — 2026-10-13
+
+- A restarted session no longer shows twice.
+- A session leaves at once when it exits.
+- New sessions are reachable right after they start.
+
+## 0.3.0 — 2026-10-13
+
+- First release: a session can ring your phone with questions, take instructions during a call, report when it is done, and gets back only its own calls.

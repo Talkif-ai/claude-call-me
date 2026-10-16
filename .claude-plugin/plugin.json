@@ -1,0 +1,63 @@
+{
+  "name": "call-me",
+  "version": "0.22.0",
+  "description": "Talk to your Claude Code sessions by voice through the Talkif app: ask them questions, give them tasks, and let them call you when they need you.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "apiKey": {
+      "type": "string",
+      "title": "Talkif API key",
+      "description": "From the Talkif dashboard (Developer → Credentials) with the scopes Connectors, Calls (read) and Flows (read). Stored in your keychain, never in settings.json.",
+      "sensitive": true
+    },
+    "apiUrl": {
+      "type": "string",
+      "title": "API URL (advanced)",
+      "description": "Leave empty for Talkif (https://api.talkif.ai). Only change it if Talkif support tells you to.",
+      "default": ""
+    },
+    "flowId": {
+      "type": "string",
+      "title": "Flow",
+      "description": "The id of the flow your calls run on. Empty: the first published flow with a Connectors node (/cm shows which).",
+      "default": ""
+    },
+    "folders": {
+      "type": "string",
+      "title": "Folders",
+      "description": "Only sessions in these folders join (comma-separated, ~/ allowed). Empty: every session; /cm on|off still decide.",
+      "default": ""
+    },
+    "debug": {
+      "type": "boolean",
+      "title": "Debug traffic pane",
+      "description": "Record this session's call-me traffic and show it with /cm traffic.",
+      "default": false
+    },
+    "parallel": {
+      "type": "boolean",
+      "title": "Queue tasks while busy",
+      "description": "Accept more tasks from a call while one runs (they queue) instead of declining.",
+      "default": false
+    },
+    "callback": {
+      "type": "boolean",
+      "title": "Ring back when a call task ends",
+      "description": "When a task given on a call finishes or gets stuck after the call ended, ring you with the result.",
+      "default": true
+    },
+    "callTasks": {
+      "type": "string",
+      "title": "Tasks from calls",
+      "description": "read-only: while a task given on a call runs, tools that change anything are refused and the session reports what it would change. session: the session's own Claude Code permissions apply. The plugin never grants a permission in either mode.",
+      "options": [
+        "read-only",
+        "session"
+      ],
+      "default": "read-only"
+    }
+  },
+  "author": {
+    "name": "Talkif"
+  }
+}

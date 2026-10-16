@@ -1,0 +1,13 @@
+{
+  "name": "talkif-call-me",
+  "owner": {
+    "name": "Talkif"
+  },
+  "plugins": [
+    {
+      "name": "call-me",
+      "source": "./"
+    }
+  ],
+  "description": "Talkif plugins for Claude Code: talk to your sessions by voice through the Talkif app."
+}
