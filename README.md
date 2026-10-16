@@ -167,3 +167,7 @@ TALKIF_ORG_BRIDGE_KEY=…  # optional: Connectors in another account (any TALKIF
 The **API URL (advanced)** option, when set, beats the file's `TALKIF_API_URL`; `flowId` and `folders` apply as usual. The connector scripts read the same file as a fallback (`--env-file PATH` picks another) and also take `--url URL` (or `TALKIF_API_URL`) and `--key-env VAR`. `node connectors/agent.mjs` is an experimental local helper that holds a WebSocket per session instead of long polling; it is not needed.
 
 Checks before a release: `claude plugin validate . --strict`, `claude plugin test .` and `tsc -p . --noEmit`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

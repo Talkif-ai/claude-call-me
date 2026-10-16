@@ -59,5 +59,6 @@
   },
   "author": {
     "name": "Talkif"
-  }
+  },
+  "license": "MIT"
 }
