@@ -115,7 +115,7 @@ test('setup: a key in the options wins; the URL is the apiUrl option or Talkif',
   // Not an http(s) address: a setup problem, never a silent fallback.
   const bad = resolveCredentials({ apiKey: 'k1', apiUrl: 'api.example.test' }, undefined)
   expect(bad.ok).toBe(false)
-  if (!bad.ok) expect(bad.problem).toMatch(/not an http/)
+  if (!bad.ok) expect(bad.problem.reason).toMatch(/not an http/)
 })
 
 test('setup: no key falls back to the developer file, with every bridge account', async () => {
@@ -141,7 +141,7 @@ test('setup: no key falls back to the developer file, with every bridge account'
   expect(resolveCredentials({ apiKey: '  ', apiUrl: '' }, undefined)).toEqual({ ok: false, problem: NO_KEY_PROBLEM })
   const broken = resolveCredentials({ apiKey: '', apiUrl: '' }, 'TALKIF_BRIDGE_KEY=x', '~/dev-file')
   expect(broken.ok).toBe(false)
-  if (!broken.ok) expect(broken.problem).toBe('~/dev-file lacks TALKIF_API_KEY (or set the apiKey option instead)')
+  if (!broken.ok) expect(broken.problem.reason).toBe('~/dev-file has no TALKIF_API_KEY')
 })
 
 test('flow: the first published flow with a Connectors node is picked', async () => {
@@ -180,10 +180,13 @@ test('folders: empty lets every session join, otherwise only sessions under one'
 })
 
 test('refusals say what to do', async () => {
-  expect(refusalReason(403, '{"code":"connectors_consent_required"}')).toMatch(/owner or admin.*Developer → Integrations/)
-  expect(refusalReason(403, '{"code":"api_key_insufficient_scope"}')).toMatch(/lacks a scope.*Developer → Credentials/)
-  expect(refusalReason(403, '{"code":"api_key_ip_restricted"}')).toMatch(/allowlist/)
-  expect(refusalReason(401, '')).toMatch(/refused/)
+  expect(refusalReason(403, '{"code":"connectors_consent_required"}')).toEqual({
+    reason: 'Connectors are not turned on for your Talkif account',
+    next: 'an owner or admin turns them on in the Talkif dashboard (Developer → Integrations)',
+  })
+  expect(refusalReason(403, '{"code":"api_key_insufficient_scope"}')?.next).toMatch(/Developer → Credentials/)
+  expect(refusalReason(403, '{"code":"api_key_ip_restricted"}')?.reason).toMatch(/allowlist/)
+  expect(refusalReason(401, '')?.reason).toMatch(/refused/)
   expect(refusalReason(500, 'connectors_consent_required')).toBe(undefined)
 })
 
@@ -222,43 +225,74 @@ test('setup: refused probes name the missing scope; the report leads with the fi
   expect(setupReport([{ name: 'API key', ok: true, detail: 'x' }])).toMatch(/All set/)
 })
 
-import { accountLabel, accountNameOf, cmHeadline, statusText } from '../hooks/config'
+import { CM_HELP, UNKNOWN_COMMAND, accountLabel, accountNameOf, accountsText, cmLines, statusText } from '../hooks/config'
 import type { CallMeState } from '../hooks/config'
 
-const state = (over: Partial<CallMeState>): CallMeState => ({ notSetUp: false, off: false, onCall: false, registered: ['Acme'], accounts: ['Acme'], ...over })
+const state = (over: Partial<CallMeState>): CallMeState => ({ problem: undefined, off: undefined, onCall: false, registered: ['Acme'], flowName: 'Interviewer', ...over })
+const consentOff = { reason: 'Connectors are not turned on for your Talkif account', next: 'an owner or admin turns them on in the Talkif dashboard (Developer → Integrations)' }
 
 test('status line: one text per state, the first match wins', async () => {
   expect(statusText(state({}))).toBe('☎ call-me: on · Acme')
-  expect(statusText(state({ registered: ['Acme', 'Beta Org'], accounts: ['Acme', 'Beta Org'] }))).toBe('☎ call-me: on · Acme, Beta Org')
-  expect(statusText(state({ registered: [] }))).toBe('☎ call-me: reconnecting…')
+  expect(statusText(state({ registered: ['Acme', 'Beta Org'] }))).toBe('☎ call-me: on · Acme, Beta Org')
+  // No name from the server: never a key slot.
+  expect(statusText(state({ registered: [undefined] }))).toBe('☎ call-me: on')
+  expect(statusText(state({ registered: [] }))).toBe('☎ call-me: connecting…')
   expect(statusText(state({ onCall: true }))).toBe('☎ call-me: on a call')
-  expect(statusText(state({ off: true }))).toBe('☎ call-me: off')
-  expect(statusText(state({ notSetUp: true }))).toBe('☎ call-me: not set up — run /cm setup')
-  // Precedence: not set up > off > on a call > reconnecting > on.
-  expect(statusText(state({ notSetUp: true, off: true, onCall: true, registered: [] }))).toMatch(/not set up/)
-  expect(statusText(state({ off: true, onCall: true, registered: [] }))).toBe('☎ call-me: off')
+  expect(statusText(state({ off: 'session' }))).toBe('☎ call-me: off')
+  expect(statusText(state({ problem: consentOff }))).toBe('☎ call-me: not set up — run /cm setup')
+  // Precedence: not set up > off > on a call > connecting > on.
+  expect(statusText(state({ problem: consentOff, off: 'all', onCall: true, registered: [] }))).toMatch(/not set up/)
+  expect(statusText(state({ off: 'default', onCall: true, registered: [] }))).toBe('☎ call-me: off')
   expect(statusText(state({ onCall: true, registered: [] }))).toBe('☎ call-me: on a call')
 })
 
-test('account names: the backend\'s name, else the key slot', async () => {
+test('account names: the backend\'s name only, else "your Talkif account"', async () => {
   expect(accountNameOf({ sessionId: 's1', accountName: ' Acme ' })).toBe('Acme')
   expect(accountNameOf({ sessionId: 's1' })).toBe(undefined)
   expect(accountNameOf({ accountName: '' })).toBe(undefined)
   expect(accountNameOf({ accountName: 7 })).toBe(undefined)
   expect(accountNameOf(undefined)).toBe(undefined)
   expect(accountLabel('personal', 'Acme')).toBe('Acme')
-  expect(accountLabel('personal', undefined)).toBe('personal')
-  expect(statusText(state({ registered: [accountLabel('org', undefined)] }))).toBe('☎ call-me: on · org')
+  expect(accountsText(['Talkif Phone'])).toBe('Talkif Phone')
+  expect(accountsText([undefined])).toBe('your Talkif account')
+  expect(accountsText([])).toBe('your Talkif account')
+  expect(accountsText([undefined, undefined])).toBe('2 Talkif accounts')
+  expect(accountsText(['Acme', 'Beta', undefined])).toBe('Acme, Beta and 1 more Talkif account')
+  for (const text of [accountsText([undefined, 'Acme']), cmLines(state({ registered: [undefined] }))]) {
+    expect(text).not.toMatch(/personal|org key|slot/)
+  }
 })
 
-test('/cm leads with one line: on, off or not set up', async () => {
-  expect(cmHeadline(state({}))).toBe('On — this session can be reached through Acme (Talkif).')
-  expect(cmHeadline(state({ onCall: true }))).toBe('On — this session can be reached through Acme (Talkif).')
-  // Not registered yet: the accounts it joins.
-  expect(cmHeadline(state({ registered: [], accounts: ['personal', 'org'] }))).toBe('On — this session can be reached through personal, org (Talkif).')
-  expect(cmHeadline(state({ registered: [], accounts: [] }))).toBe('On — this session can be reached through Talkif.')
-  expect(cmHeadline(state({ off: true }))).toBe('Off — turn it on with /cm on.')
-  expect(cmHeadline(state({ notSetUp: true, off: true }))).toBe('Not set up — run /cm setup.')
+test('/cm is two or three lines: on, off, connecting or not set up', async () => {
+  expect(cmLines(state({ registered: ['Talkif Phone'] }))).toBe(
+    '☎ On. This session can be reached through Talkif Phone.\nCall "Interviewer" in the Talkif app.\nMore: /cm help',
+  )
+  expect(cmLines(state({ flowName: undefined, registered: [undefined] }))).toBe(
+    '☎ On. This session can be reached through your Talkif account.\nCall your Talkif agent in the Talkif app.\nMore: /cm help',
+  )
+  expect(cmLines(state({ onCall: true }))).toMatch(/^☎ On a call\. This session can be reached through Acme\./)
+  expect(cmLines(state({ off: 'session' }))).toBe('☎ Off. Turn it on with /cm on.\nMore: /cm help')
+  expect(cmLines(state({ off: 'default' }))).toBe('☎ Off. Turn it on with /cm on.\nMore: /cm help')
+  // Off for every session: /cm on alone would not do it.
+  expect(cmLines(state({ off: 'all' }))).toBe('☎ Off. Turn it on with /cm on all.\nMore: /cm help')
+  expect(cmLines(state({ registered: [] }))).toBe('☎ Connecting…\nMore: /cm help')
+  expect(cmLines(state({ problem: consentOff, off: 'all' }))).toBe(
+    '☎ Not set up: Connectors are not turned on for your Talkif account.\n' +
+      'Next: An owner or admin turns them on in the Talkif dashboard (Developer → Integrations).\nMore: /cm help',
+  )
+  for (const s of [state({}), state({ off: 'all' }), state({ registered: [] }), state({ problem: consentOff })]) {
+    expect(cmLines(s).split('\n').length).toBeLessThanOrEqual(3)
+  }
+})
+
+test('/cm help: one line per command, the common ones first', async () => {
+  const lines = CM_HELP.split('\n')
+  expect(lines[1]).toBe('/cm — is this session reachable?')
+  expect(lines.indexOf('Advanced:')).toBeGreaterThan(lines.findIndex(l => l.startsWith('/cm traffic')))
+  for (const cmd of ['/cm on | off', '/cm on all | off all', '/cm default on | off', '/cm setup', '/cm traffic', '/cm publish', '/cm latency']) {
+    expect(lines.some(l => l.startsWith(`${cmd} — `))).toBe(true)
+  }
+  expect(UNKNOWN_COMMAND).toBe('Unknown command. See /cm help.')
 })
 
 import { CallTaskScope } from '../hooks/read-only'
@@ -321,4 +355,121 @@ test('the asker\'s name is one short, plain line', async () => {
   expect(askerName('<>{}')).toBe(undefined)
   expect(askerName(undefined)).toBe(undefined)
   expect(askerName(42)).toBe(undefined)
+})
+
+// ---- The engine end to end: a refusal that is fixed in the dashboard clears by itself ----
+
+import { mock } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
+
+const FLOW_DEF = { nodes: { main_agent: { functions: [{ type: 'connectors', name: 'connectors' }] } } }
+
+/**
+ * A fake Talkif behind $.http.fetch: Connectors off until `world.consent` turns
+ * true. The bridge long-poll stays open, as the real one does while no call comes,
+ * until the session leaves.
+ */
+function fakeTalkif(on: On) {
+  const world = { consent: false, registers: 0 }
+  const json = (status: number, body: unknown) => ({ value: { status, ok: status >= 200 && status < 300, headers: {}, text: body === undefined ? '' : JSON.stringify(body) } })
+  const refused = json(403, { code: 'connectors_consent_required' })
+  const openPolls: ((answer: ReturnType<typeof json>) => void)[] = []
+  on('http.fetch', async (_$, e) => {
+    const path = new URL(e.url).pathname.replace(/^\/api\/v1/, '')
+    const method = e.init?.method ?? 'GET'
+    if (path === '/session-bridge' && method === 'POST') {
+      if (!world.consent) return refused
+      world.registers += 1
+      return json(200, { sessionId: 'bridge-1', accountName: 'Talkif Phone' })
+    }
+    if (path === '/session-bridge/bridge-1/next') {
+      if (!world.consent) return refused
+      // A long-poll with nothing to deliver stays open; leaving the bridge ends it (404).
+      return new Promise<ReturnType<typeof json>>(resolve => openPolls.push(resolve))
+    }
+    if (path === '/session-bridge/bridge-1' && method === 'DELETE') {
+      for (const end of openPolls.splice(0)) end(json(404, { code: 'not_found' }))
+      return json(204, undefined)
+    }
+    if (path.startsWith('/session-bridge/')) return json(200, {})
+    if (path === '/connectors/consent') return json(200, { accepted: world.consent, accountName: 'Talkif Phone', acceptedByName: 'Ada' })
+    if (path === '/calls') return json(200, { calls: [] })
+    if (path === '/flows/published') return json(200, { flows: [{ id: 'flow-1', name: 'Interviewer' }] })
+    if (path === '/flows/flow-1') return json(200, { id: 'flow-1', name: 'Interviewer', status: 'PUBLISHED', definition: FLOW_DEF })
+    return json(404, { code: 'not_found' })
+  })
+  on('process.run', ($, e) => ({ value: { exitCode: e.argv[0] === 'printenv' ? 0 : 1, stdout: e.argv[0] === 'printenv' ? '/home/test\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('fs.exists', () => ({ value: false }))
+  on('fs.write', () => ({ value: undefined }))
+  on('session.id', () => ({ value: 'session-test' }))
+  on('session.messages', () => ({ value: [] }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  return world
+}
+
+const cm = async ($: Engine, args: string): Promise<string> => (await $.command.run({ command: 'cm', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })).text ?? ''
+const startSession = ($: Engine) => $.session.start({ cwd: '/home/test/app', surface: null, isInteractive: true })
+
+test('a refused bridge re-probes every 30 s and resumes once Connectors are on', { options: { apiKey: 'tif_test_FAKE' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const world = fakeTalkif(on)
+  await startSession($)
+  await clock.settle()
+  expect(await cm($, '')).toBe(
+    '☎ Not set up: Connectors are not turned on for your Talkif account.\n' +
+      'Next: An owner or admin turns them on in the Talkif dashboard (Developer → Integrations).\nMore: /cm help',
+  )
+  // The owner turns Connectors on: within 30 s the session is reachable again, no command needed.
+  world.consent = true
+  await clock.advance(29_000)
+  expect(world.registers).toBe(0)
+  await clock.advance(1_000)
+  expect(world.registers).toBe(1)
+  expect(await cm($, '')).toBe('☎ On. This session can be reached through Talkif Phone.\nCall "Interviewer" in the Talkif app.\nMore: /cm help')
+})
+
+test('/cm setup clears a stale refusal at once, and /cm agrees with it', { options: { apiKey: 'tif_test_FAKE' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const world = fakeTalkif(on)
+  await startSession($)
+  await clock.settle()
+  expect(await cm($, '')).toMatch(/^☎ Not set up: Connectors are not turned on/)
+  world.consent = true
+  // No 30 s wait: setup itself re-registers, and ends with the live line.
+  const setup = cm($, 'setup')
+  await clock.advance(1_000)
+  const report = await setup
+  expect(report).toMatch(/\[ok\] {6}Connectors: turned on for the account Talkif Phone/)
+  expect(report).toMatch(/All set/)
+  expect(report).toMatch(/Accounts: Talkif Phone \(connected\)/)
+  expect(report).not.toMatch(/personal/)
+  expect(report.endsWith('☎ On. This session can be reached through Talkif Phone.\nCall "Interviewer" in the Talkif app.\nMore: /cm help')).toBe(true)
+  expect(world.registers).toBe(1)
+  expect(await cm($, '')).toMatch(/^☎ On\. This session can be reached through Talkif Phone\./)
+})
+
+test('/cm help, switches and unknown commands answer in a line or a short list', { options: { apiKey: 'tif_test_FAKE' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const world = fakeTalkif(on)
+  world.consent = true
+  await startSession($)
+  await clock.settle()
+  expect(await cm($, 'help')).toBe(CM_HELP)
+  expect(await cm($, 'frobnicate')).toBe('Unknown command. See /cm help.')
+  expect(await cm($, 'on everything now')).toBe('Unknown command. See /cm help.')
+  expect(await cm($, 'off')).toBe('☎ Off. Turn it on with /cm on.\nMore: /cm help')
+  expect(await cm($, 'off all')).toBe('☎ Off. Turn it on with /cm on all.\nMore: /cm help')
+  const back = await cm($, 'on all')
+  expect(back === '☎ Connecting…\nMore: /cm help' || back.startsWith('☎ On.')).toBe(true)
+  await clock.advance(1_000)
+  expect(await cm($, '')).toMatch(/^☎ On\./)
+  expect(await cm($, 'traffic')).toMatch(/debug option/)
 })

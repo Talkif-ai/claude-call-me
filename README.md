@@ -28,7 +28,7 @@ Create the key yourself, signed in as you: what the key registers belongs to the
 /plugin install call-me --marketplace Talkif-ai/claude-call-me
 ```
 
-Answer `y` to add the marketplace and choose the **user** scope. The repository is private: you need read access to it on GitHub and a git login for github.com on your machine (an SSH key, or `gh auth login` then `gh auth setup-git`).
+Answer `y` to add the marketplace and choose the **user** scope.
 
 **3. Paste the key and check.** The install asks for the plugin's options. Paste the key into **Talkif API key** and leave **API URL (advanced)** empty. To change the key later: `/plugin` → Installed → call-me → **Configure options**. The key is kept in your system keychain, not in a settings file.
 
@@ -44,11 +44,21 @@ When everything is ready you see:
 call-me setup
 [ok]      API key: from the apiKey option (keychain)
 [ok]      Backend: https://api.talkif.ai (Talkif, the default)
-[ok]      Connectors: turned on for this account (by Ada Lovelace)
+[ok]      Connectors: turned on for the account Acme (by Ada Lovelace)
 [ok]      Call history: the key can read calls and transcripts
 [ok]      Flow: "Claude Code calls" (<flow id>, the first published flow with a Connectors node; set flowId in /config → call-me to choose another)
 
 All set. Call your Talkif agent from the Talkif app (signed in), or let a session ring you with call_me.
+
+Details
+Accounts: Acme (connected)
+Folders: every session (set folders in /config → call-me to limit)
+This session: follows the default
+All sessions: on. New sessions start on.
+
+☎ On. This session can be reached through Acme.
+Call "Claude Code calls" in the Talkif app.
+More: /cm help
 ```
 
 If something is missing, it says what to do next, for example:
@@ -70,11 +80,25 @@ Under the prompt, call-me shows one status line:
 |---|---|
 | `☎ call-me: on · Acme` | this session can be reached through your voice agent, in the account named after the dot |
 | `☎ call-me: on a call` | a call is ringing or running for this session, or a task from a call is running or queued |
-| `☎ call-me: reconnecting…` | the connection to Talkif dropped or has not come up yet; it retries by itself |
+| `☎ call-me: connecting…` | the connection to Talkif is coming up, or dropped and retries by itself |
 | `☎ call-me: off` | this session is switched off (`/cm on` turns it back on) |
-| `☎ call-me: not set up — run /cm setup` | no API key, a setup problem, or Talkif refused the key: `/cm setup` says what to fix |
+| `☎ call-me: not set up — run /cm setup` | no API key, a setup problem, or Talkif refused the key: `/cm` says why, `/cm setup` checks everything |
 
-`/cm` starts with the same answer in one line, then the details.
+`/cm` gives the same answer in two or three lines, for example:
+
+```
+☎ On. This session can be reached through Acme.
+Call "Claude Code calls" in the Talkif app.
+More: /cm help
+```
+
+```
+☎ Not set up: Connectors are not turned on for your Talkif account.
+Next: An owner or admin turns them on in the Talkif dashboard (Developer → Integrations).
+More: /cm help
+```
+
+When Talkif refuses the key (Connectors off, a missing scope, an IP allowlist), call-me tries again every 30 seconds and comes back on by itself once it is fixed. `/cm setup` tries again at once.
 
 ## Using it
 
@@ -107,16 +131,23 @@ Under the prompt, call-me shows one status line:
 - **Callers who are not proven** (phone numbers, embeds, API keys) reach nothing, except connectors you made public, and those only for look-ups.
 ## Commands
 
+`/cm help` shows this list.
+
 | Command | What it does |
 |---|---|
-| `/cm` | whether this session is on and through which account, then key, server, flow, folders and any problem |
-| `/cm setup` | checks your setup and prints the next step for what is missing |
-| `/cm on` · `/cm off` | this session joins or leaves your voice agent |
-| `/cm on all` · `/cm off all` | every session on this machine |
-| `/cm default on` · `/cm default off` | whether new sessions start on or off |
-| `/cm traffic` | live pane of this session's call-me traffic (needs the `debug` option) |
-| `/cm publish` | writes call-me's instructions into the flow's Connectors node (the key also needs `flows:write`) |
-| `/cm latency` | times how fast this session answers |
+| `/cm` | is this session reachable? |
+| `/cm on` · `/cm off` | make this session reachable / not reachable |
+| `/cm on all` · `/cm off all` | all open sessions on / off |
+| `/cm default on` · `/cm default off` | how new sessions start |
+| `/cm setup` | check the connection and show what's missing (also shows the key, flow, accounts and folders in use) |
+| `/cm traffic` | see what went back and forth (needs the `debug` option) |
+
+Advanced:
+
+| Command | What it does |
+|---|---|
+| `/cm publish` | write the call prompt into your flow's Connectors node (the key also needs `flows:write`) |
+| `/cm latency` | time a spoken answer |
 
 ## Options
 
@@ -161,14 +192,14 @@ It only answers questions, never takes tasks, and only you can reach it (it runs
 
 | You see | Fix |
 |---|---|
-| `no Talkif API key set` | Create a key (step 1) and paste it in `/plugin` → Installed → call-me → Configure options. |
-| `Connectors are not turned on for this account` | An owner or admin turns them on in the dashboard: Developer → Integrations. Then run `/cm setup`. |
-| `the API key lacks a scope this needs` | Edit the key in Developer → Credentials and add the scope `/cm setup` names. |
-| `this IP is not on the API key allowlist` | Add your current IP address to the key, or remove the restriction. call-me pauses and checks again every 5 minutes. |
-| `no published flow with a Connectors node in this account` | Add a Connectors node to an agent in the flow builder and publish it, or set `flowId`. |
+| `no Talkif API key is set` | Create a key (step 1) and paste it in `/plugin` → Installed → call-me → Configure options. |
+| `Connectors are not turned on for your Talkif account` | An owner or admin turns them on in the dashboard: Developer → Integrations. call-me notices within 30 seconds, or at once with `/cm setup`. |
+| `the API key lacks a scope it needs` | Edit the key in Developer → Credentials and add the scope `/cm setup` names. |
+| `this computer's IP address is not on the API key's allowlist` | Add your current IP address to the key, or remove the restriction. call-me checks again every 30 seconds. |
+| `your Talkif account has no published flow with a Connectors node` | Add a Connectors node to an agent in the flow builder and publish it, or set `flowId`. |
 | `the API key was refused (expired or revoked?)` | Create a new key and paste it in Configure options. |
 | `/cm` is an unknown command in a session | The session's folder is not in the `folders` option. Add it, or empty the option. |
-| Your call does not reach the session | Call from the Talkif app while signed in, and check `/cm` says this session is on. |
+| Your call does not reach the session | Call from the Talkif app while signed in, and check `/cm` says `☎ On`. |
 
 After a plugin update, run `/reload-plugins` to use it without restarting.
 

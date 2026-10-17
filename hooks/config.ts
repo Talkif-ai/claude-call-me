@@ -29,14 +29,26 @@ export type Credentials = {
   bridges: BridgeKey[]
 }
 
-export type Resolved = { ok: true; credentials: Credentials } | { ok: false; problem: string }
+/**
+ * Something that keeps call-me from working, said plainly: what is wrong (no
+ * capital, no full stop) and exactly one step that fixes it.
+ */
+export type Problem = { reason: string; next: string }
+
+/** A problem as one sentence for a log line: "<reason>. Next: <step>". */
+export const problemText = (p: Problem): string => `${p.reason}. Next: ${p.next}`
+
+export type Resolved = { ok: true; credentials: Credentials } | { ok: false; problem: Problem }
 
 /** The options this module reads, already narrowed from PluginOptions. */
 export type SetupOptions = { apiKey: string; apiUrl: string }
 
-export const NO_KEY_PROBLEM =
-  'no Talkif API key set. Create one in the Talkif dashboard (Developer → Credentials, scopes Connectors, Calls and Flows), ' +
-  'then paste it in /plugin → call-me → Configure options.'
+const PASTE_KEY = 'paste it in /plugin → call-me → Configure options'
+
+export const NO_KEY_PROBLEM: Problem = {
+  reason: 'no Talkif API key is set',
+  next: `create one in the Talkif dashboard (Developer → Credentials, scopes Connectors, Calls read and Flows read) and ${PASTE_KEY}`,
+}
 
 /**
  * The apiUrl option as a base URL (no trailing slash), DEFAULT_API_URL when empty,
@@ -48,8 +60,10 @@ export function normalizeApiUrl(raw: string): string | undefined {
   return /^https?:\/\/[^/\s]+/.test(url) ? url : undefined
 }
 
-export const badUrlProblem = (raw: string) =>
-  `the API URL option "${raw.trim()}" is not an http:// or https:// address. Empty it to use Talkif (${DEFAULT_API_URL}).`
+export const badUrlProblem = (raw: string): Problem => ({
+  reason: `the API URL option "${raw.trim()}" is not an http:// or https:// address`,
+  next: `empty the API URL option in /plugin → call-me → Configure options to use Talkif (${DEFAULT_API_URL})`,
+})
 
 /** KEY=value lines; blank lines, comments and lines without "=" are skipped. */
 export function parseEnvFile(text: string): Record<string, string> {
@@ -84,11 +98,13 @@ export function resolveCredentials(options: SetupOptions, devFile: string | unde
   if (devFile === undefined) return { ok: false, problem: NO_KEY_PROBLEM }
   const vars = parseEnvFile(devFile)
   const apiKey = vars.TALKIF_API_KEY ?? ''
-  if (!apiKey) return { ok: false, problem: `${devFileName} lacks TALKIF_API_KEY (or set the apiKey option instead)` }
+  if (!apiKey) return { ok: false, problem: { reason: `${devFileName} has no TALKIF_API_KEY`, next: `add it there, or ${PASTE_KEY}` } }
   let url = optionUrl
   if (!fromOption && vars.TALKIF_API_URL) {
     const fileUrl = normalizeApiUrl(vars.TALKIF_API_URL)
-    if (fileUrl === undefined) return { ok: false, problem: `TALKIF_API_URL in ${devFileName} is not an http:// or https:// address` }
+    if (fileUrl === undefined) {
+      return { ok: false, problem: { reason: `TALKIF_API_URL in ${devFileName} is not an http:// or https:// address`, next: 'fix it or remove the line' } }
+    }
     url = fileUrl
   }
   const bridges: BridgeKey[] = []
@@ -137,9 +153,10 @@ export async function pickConnectorsFlow(
   return undefined
 }
 
-export const NO_FLOW_PROBLEM =
-  'no published flow with a Connectors node in this account. In the flow builder add a Connectors node to an agent and publish, ' +
-  'or set the flowId option.'
+export const NO_FLOW_PROBLEM: Problem = {
+  reason: 'your Talkif account has no published flow with a Connectors node',
+  next: 'in the Talkif flow builder add a Connectors node to an agent and publish the flow',
+}
 
 /** The folders option: comma- or newline-separated; `~/x` is under home, a relative path too. */
 export function parseFolders(text: string, home: string): string[] {
@@ -159,17 +176,19 @@ export function folderAllowed(cwd: string, folders: readonly string[]): boolean 
 }
 
 /** A 401/403 from the backend, said so the user knows what to do; undefined for any other status. */
-export function refusalReason(status: number, text: string): string | undefined {
+export function refusalReason(status: number, text: string): Problem | undefined {
   if (status !== 401 && status !== 403) return undefined
   if (text.includes('connectors_consent_required')) {
-    return 'Connectors are not turned on for this account: an owner or admin must turn them on in the Talkif dashboard (Developer → Integrations)'
+    return { reason: 'Connectors are not turned on for your Talkif account', next: 'an owner or admin turns them on in the Talkif dashboard (Developer → Integrations)' }
   }
   if (text.includes('api_key_insufficient_scope')) {
-    return 'the API key lacks a scope this needs (Connectors, Calls read, Flows read): edit its scopes in Developer → Credentials'
+    return { reason: 'the API key lacks a scope it needs', next: 'add the scopes Connectors, Calls (read) and Flows (read) to the key in Developer → Credentials' }
   }
-  if (text.includes('api_key_ip_restricted')) return 'this IP is not on the API key allowlist'
-  if (status === 401) return 'the API key was refused (expired or revoked?)'
-  return 'the API key is not allowed to do this'
+  if (text.includes('api_key_ip_restricted')) {
+    return { reason: "this computer's IP address is not on the API key's allowlist", next: 'add it to the key in Developer → Credentials, or remove the restriction' }
+  }
+  if (status === 401) return { reason: 'the API key was refused (expired or revoked?)', next: `create a new key in Developer → Credentials and ${PASTE_KEY}` }
+  return { reason: 'the API key is not allowed to do this', next: 'run /cm setup to see what is missing' }
 }
 
 // ---- /cm setup: one check per thing a user must have, each with its next step ----
@@ -250,48 +269,94 @@ export function setupReport(checks: readonly Check[]): string {
   return lines.join('\n')
 }
 
-// ---- Is it on? The status line and the first line of /cm ----
+// ---- Is it on? The status line, /cm and /cm help ----
 
 /** The account name the backend sends (register answer, consent read); undefined when it sends none. */
 export const accountNameOf = (body: unknown): string | undefined =>
   isRecord(body) ? optString(typeof body.accountName === 'string' ? body.accountName.trim() : undefined) : undefined
 
-/** What a bridge is shown as: the account's name, else the name of its key slot (personal, org, …). */
+/**
+ * What the traffic pane shows a bridge as: the account's name, else the name of
+ * its key slot (personal, org, …). Debug only: what users read names accounts
+ * with accountsText.
+ */
 export const accountLabel = (slot: string, accountName: string | undefined): string => accountName ?? slot
 
-/** What the status line and /cm read. */
+/**
+ * Accounts as a user reads them: their names from Talkif, never key slots.
+ * Unnamed ones are "your Talkif account" (one) or "N Talkif accounts".
+ */
+export function accountsText(names: readonly (string | undefined)[]): string {
+  const named = [...new Set(names.filter((n): n is string => n !== undefined))]
+  const unnamed = names.length - names.filter(n => n !== undefined).length
+  const parts = [...named]
+  if (unnamed > 0) {
+    parts.push(named.length ? `${unnamed} more Talkif account${unnamed > 1 ? 's' : ''}` : unnamed > 1 ? `${unnamed} Talkif accounts` : 'your Talkif account')
+  }
+  if (parts.length === 0) return 'your Talkif account'
+  return parts.length === 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
+
+/** What the status line and /cm read: one live state, so they never disagree with each other or /cm setup. */
 export type CallMeState = {
-  /** No key, a setup problem (bad URL, no Connectors flow) or access refused. */
-  notSetUp: boolean
-  /** This session is switched off (/cm off, off all, default off). */
-  off: boolean
+  /** What keeps it from working (no key, no Connectors flow, access refused); undefined when nothing does. */
+  problem: Problem | undefined
+  /** Why this session is off: /cm off, /cm off all, or /cm default off; undefined when on. */
+  off: 'session' | 'all' | 'default' | undefined
   /** An interview ringing or in progress, a call task running, or call tasks queued. */
   onCall: boolean
-  /** The accounts this session is registered in, as accountLabel shows them. */
-  registered: readonly string[]
-  /** Every account this session joins (registered or not yet), as accountLabel shows them. */
-  accounts: readonly string[]
+  /** The accounts this session is registered in now, by their Talkif name (undefined: none sent). */
+  registered: readonly (string | undefined)[]
+  /** The name of the flow calls run on, when known. */
+  flowName: string | undefined
+}
+
+const sentence = (text: string): string => {
+  const t = text.trim().replace(/[.\s]+$/, '')
+  return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}.` : ''
 }
 
 /**
  * The status line; the first matching state wins: not set up, off, on a call,
- * reconnecting (no account registered yet, or every one retrying), on.
+ * connecting (no account registered yet, or every one retrying), on.
  */
 export function statusText(state: CallMeState): string {
-  if (state.notSetUp) return '☎ call-me: not set up — run /cm setup'
+  if (state.problem) return '☎ call-me: not set up — run /cm setup'
   if (state.off) return '☎ call-me: off'
   if (state.onCall) return '☎ call-me: on a call'
-  if (state.registered.length === 0) return '☎ call-me: reconnecting…'
-  return `☎ call-me: on · ${state.registered.join(', ')}`
+  if (state.registered.length === 0) return '☎ call-me: connecting…'
+  const named = [...new Set(state.registered.filter((n): n is string => n !== undefined))]
+  return named.length ? `☎ call-me: on · ${named.join(', ')}` : '☎ call-me: on'
 }
 
-/** The first line of /cm, in the same order as statusText. */
-export function cmHeadline(state: CallMeState): string {
-  if (state.notSetUp) return 'Not set up — run /cm setup.'
-  if (state.off) return 'Off — turn it on with /cm on.'
-  const names = state.registered.length ? state.registered : state.accounts
-  return names.length ? `On — this session can be reached through ${names.join(', ')} (Talkif).` : 'On — this session can be reached through Talkif.'
+export const MORE = 'More: /cm help'
+
+/** /cm: two or three lines, in the same order as statusText. */
+export function cmLines(state: CallMeState): string {
+  if (state.problem) return [`☎ Not set up: ${state.problem.reason}.`, `Next: ${sentence(state.problem.next)}`, MORE].join('\n')
+  if (state.off) return [`☎ Off. Turn it on with ${state.off === 'all' ? '/cm on all' : '/cm on'}.`, MORE].join('\n')
+  if (state.registered.length === 0) return ['☎ Connecting…', MORE].join('\n')
+  const call = state.flowName ? `Call "${state.flowName}" in the Talkif app.` : 'Call your Talkif agent in the Talkif app.'
+  const head = state.onCall ? '☎ On a call.' : '☎ On.'
+  return [`${head} This session can be reached through ${accountsText(state.registered)}.`, call, MORE].join('\n')
 }
+
+/** /cm help: one plain line per command, the common ones first. */
+export const CM_HELP = [
+  'call-me commands',
+  '/cm — is this session reachable?',
+  '/cm on | off — make this session reachable / not reachable',
+  '/cm on all | off all — all open sessions on / off',
+  '/cm default on | off — how new sessions start',
+  '/cm setup — check the connection and show what\'s missing',
+  '/cm traffic — see what went back and forth (needs the debug option)',
+  '',
+  'Advanced:',
+  "/cm publish — write the call prompt into your flow's Connectors node",
+  '/cm latency — time a spoken answer',
+].join('\n')
+
+export const UNKNOWN_COMMAND = 'Unknown command. See /cm help.'
 
 /**
  * The name of the signed-in person who asked, as Talkif sends it (`callerName`),

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.25.0 — 2026-10-17
+
+- **Fix: call-me no longer stays "not set up" after the problem is fixed.** When Talkif refused the key (for example Connectors not turned on yet), call-me waited 5 minutes before trying again, and `/cm setup` could report everything ok while `/cm` still said "Connectors are not turned on". Now it tries again every 30 seconds and comes back on by itself; `/cm setup` tries again at once and ends with the same live line `/cm` shows, so the two never disagree.
+- **`/cm` is two or three lines:** on (through which account, and which agent to call), off (and how to turn it on), connecting, or not set up (the reason in plain words and exactly one next step). The details (key, server, flow, accounts, folders, switches) moved to `/cm setup`.
+- **New `/cm help`:** one plain line per command, the common ones first. An unknown command answers "Unknown command. See /cm help." instead of the whole status.
+- Accounts are shown only by their name in Talkif, never by key slot ("personal key"); without a name, "your Talkif account". The status line follows the same words and says `connecting…` instead of `reconnecting…`.
+- `/cm off all` now says to turn it back on with `/cm on all` (`/cm on` alone did not, while every session was off). `/cm on` reconnects at once instead of within 20 seconds.
+- `/cm traffic` without the debug option says how to turn it on instead of opening an empty pane.
+- A flow set with the `flowId` option is shown by its name.
+
 ## 0.24.0 — 2026-10-17
 
 - **Organizations share their connectors.** In an organization, every owner, admin and member on a proven call reaches all of its connectors, your coding sessions included, for questions and tasks. In a personal account only you do. See "Who can reach what" in the README.

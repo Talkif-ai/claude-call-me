@@ -1,6 +1,6 @@
 {
   "name": "call-me",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "description": "Talk to your Claude Code sessions by voice through the Talkif app: ask them questions, give them tasks, and let them call you when they need you.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -19,7 +19,7 @@
     "flowId": {
       "type": "string",
       "title": "Flow",
-      "description": "The id of the flow your calls run on. Empty: the first published flow with a Connectors node (/cm shows which).",
+      "description": "The id of the flow your calls run on. Empty: the first published flow with a Connectors node (/cm setup shows which).",
       "default": ""
     },
     "folders": {

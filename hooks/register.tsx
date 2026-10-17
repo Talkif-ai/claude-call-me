@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register, EngineInterface, ToolCallInput } from 'claude-code'
+import type { Register, EngineInterface, Timer, ToolCallInput } from 'claude-code'
 
 import type { TrafficEntry } from '../types'
 import { CallTaskScope, readOnlyDenial } from './read-only'
@@ -11,10 +11,13 @@ import {
   FLOW_STEP,
   KEY_STEP,
   NO_FLOW_PROBLEM,
+  CM_HELP,
+  UNKNOWN_COMMAND,
   accountLabel,
   accountNameOf,
+  accountsText,
   askerName,
-  cmHeadline,
+  cmLines,
   consentCheck,
   failedProbe,
   parseConsent,
@@ -25,10 +28,11 @@ import {
   publishedFlows,
   hasConnectorsNode,
   refusalReason,
+  problemText,
   resolveCredentials,
   statusText,
 } from './config'
-import type { CallMeState, Check, Credentials, FlowRef } from './config'
+import type { CallMeState, Check, Credentials, FlowRef, Problem } from './config'
 
 // call_me rings the developer's phone through their Talkif voice agent (a
 // published flow with a Connectors node; backend POST /session-bridge/calls)
@@ -37,7 +41,7 @@ import type { CallMeState, Check, Credentials, FlowRef } from './config'
 const TOOL = 'call_me'
 // Sent as the User-Agent on every request to the backend and the bridge. Kept equal
 // to .claude-plugin/plugin.json's version: bump both together.
-export const VERSION = '0.24.0'
+export const VERSION = '0.25.0'
 const USER_AGENT = `talkif-call-me/${VERSION}`
 // Debug pane: this session's bridge traffic, newest last (`/cm traffic`; recorded only with the debug option).
 const TRAFFIC_PANE = 'call-me-traffic'
@@ -125,15 +129,19 @@ let optApiUrl = ''
 let optFlowId = ''
 let optFolders = ''
 
-// Setup that is wrong (no key, no flow): shown in /cm status, and once as a notice.
-class SetupProblem extends Error {}
-let setupProblem: string | undefined
+// Setup that is wrong (no key, no flow): shown by /cm, and once as a notice.
+class SetupProblem extends Error {
+  constructor(readonly problem: Problem) {
+    super(problemText(problem))
+  }
+}
+let setupProblem: Problem | undefined
 let credentials: Credentials | undefined
 
-function reportProblem($: EngineInterface, problem: string) {
-  if (setupProblem === problem) return
+function reportProblem($: EngineInterface, problem: Problem) {
+  if (setupProblem?.reason === problem.reason) return
   setupProblem = problem
-  $.ui.log(`call-me: ${problem}`)
+  $.ui.log(`call-me: ${problemText(problem)}`)
   void refreshStatus($)
 }
 
@@ -204,7 +212,9 @@ async function resolveFlow($: EngineInterface): Promise<FlowRef> {
   const { url } = await loadEnv($)
   const fromOption = optFlowId.trim()
   if (fromOption) {
-    flow = { id: fromOption, name: fromOption }
+    // The flow's name, for /cm ("Call <name> in the Talkif app"); the id when it cannot be read.
+    const named = await api($, `/flows/${encodeURIComponent(fromOption)}`).catch(() => undefined)
+    flow = { id: fromOption, name: isRecord(named) && typeof named.name === 'string' && named.name ? named.name : fromOption }
     flowFrom = 'option'
     return flow
   }
@@ -227,7 +237,7 @@ async function resolveFlow($: EngineInterface): Promise<FlowRef> {
     throw new SetupProblem(NO_FLOW_PROBLEM)
   }
   await $.store.set(flowStoreKey(url), picked)
-  if (setupProblem === NO_FLOW_PROBLEM) setupProblem = undefined
+  if (setupProblem?.reason === NO_FLOW_PROBLEM.reason) setupProblem = undefined
   flow = picked
   flowFrom = 'picked'
   $.ui.log(`call-me: using the flow "${picked.name}" (the first published flow with a Connectors node). Set the flowId option to use another.`)
@@ -236,30 +246,42 @@ async function resolveFlow($: EngineInterface): Promise<FlowRef> {
 
 const flowId = async ($: EngineInterface): Promise<string> => (await resolveFlow($)).id
 
-// Access refused (401/403: IP not allowed, key expired or revoked) does not fix
-// itself in seconds: pause that loop, show it once, heartbeat every 5 minutes.
-const HEARTBEAT_MS = 5 * 60_000
+// Access refused (401/403: Connectors off, IP not allowed, key expired or revoked):
+// pause that loop, show it once, and try again every 30 s, so a fix made in the
+// dashboard (an owner turning Connectors on) is picked up by itself. /cm setup
+// tries again at once.
+export const REFUSED_RETRY_MS = 30_000
 type Loop = 'calls' | `bridge:${string}`
-class AccessRefused extends Error {}
-const paused = new Map<Loop, string>()
+class AccessRefused extends Error {
+  constructor(readonly problem: Problem) {
+    super(problemText(problem))
+  }
+}
+const paused = new Map<Loop, Problem>()
+// The calls loop polls every 15 s; while refused, it tries again at this time.
+let callsRetryAt = 0
+// The reason last logged per loop: a retry that is refused again says nothing new.
+const loggedPause = new Map<Loop, string>()
 
 const refusal = (status: number, text: string): AccessRefused | undefined => {
-  const reason = refusalReason(status, text)
-  return reason === undefined ? undefined : new AccessRefused(reason)
+  const problem = refusalReason(status, text)
+  return problem === undefined ? undefined : new AccessRefused(problem)
 }
 
-function pause($: EngineInterface, loop: Loop, reason: string) {
-  if (paused.get(loop) === reason) return
-  paused.set(loop, reason)
+function pause($: EngineInterface, loop: Loop, problem: Problem) {
+  paused.set(loop, problem)
   void refreshStatus($)
-  $.ui.log(`call-me: ${loop} paused: ${reason}. Checking again every 5 minutes.`)
-  void trace($, 'error', loop, 'paused', reason)
+  if (loggedPause.get(loop) === problem.reason) return
+  loggedPause.set(loop, problem.reason)
+  $.ui.log(`call-me: ${problemText(problem)}. call-me checks again every 30 seconds.`)
+  void trace($, 'error', loop, 'paused', problem.reason)
 }
 
 function resume($: EngineInterface, loop: Loop) {
+  loggedPause.delete(loop)
   if (!paused.delete(loop)) return
   void refreshStatus($)
-  $.ui.log(`call-me: ${loop} access is back; resumed.`)
+  $.ui.log('call-me: access is back; resumed.')
   void trace($, 'info', loop, 'resumed', 'access is back')
 }
 
@@ -477,7 +499,8 @@ type BridgeTurn = { requestId: string; callId: string; messages: unknown[]; kind
 // organization). The session registers in each, so a call in any of them reaches it.
 // accountName: the account's display name as the backend sends it (register answer, else
 // the consent read of /cm setup); until it does, the bridge is shown by its slot name.
-type Bridge = { name: string; key: string; session: string | undefined; failures: number; accountName?: string }
+// timer: the wait before this bridge's next poll (none while a poll runs); wakeBridges cuts it short.
+type Bridge = { name: string; key: string; session: string | undefined; failures: number; accountName?: string; timer?: Timer }
 const labelOf = (b: Bridge): string => accountLabel(b.name, b.accountName)
 const bridges: Bridge[] = []
 const personalBridge = (): Bridge | undefined => bridges.find(b => b.name === 'personal')
@@ -614,6 +637,8 @@ async function bridgeRegister($: EngineInterface, bridge: Bridge): Promise<boole
   const body: unknown = JSON.parse(res.text)
   bridge.session = isRecord(body) && typeof body.sessionId === 'string' ? body.sessionId : undefined
   bridge.accountName = accountNameOf(body) ?? bridge.accountName
+  // Registered: access is back, whatever refused it before.
+  if (bridge.session) resume($, `bridge:${bridge.name}`)
   await trace($, 'info', bridge.name, 'register', `session ${bridge.session ?? '?'}${bridge.accountName ? ` · ${bridge.accountName}` : ''}`)
   await refreshStatus($)
   // A new session describes itself at once, so the call can route to it from the first minute.
@@ -846,11 +871,7 @@ async function bridgeAnswer($: EngineInterface, bridge: Bridge, turn: BridgeTurn
 let sessionSwitch: 'on' | 'off' | undefined
 const OFF_CHECK_MS = 20_000
 
-async function bridgeEnabled($: EngineInterface): Promise<boolean> {
-  if ((await $.store.get('allOff')) === true) return false
-  if (sessionSwitch) return sessionSwitch === 'on'
-  return (await $.store.get('defaultOff')) !== true
-}
+const bridgeEnabled = async ($: EngineInterface): Promise<boolean> => (await offReason($)) === undefined
 
 async function leaveBridge($: EngineInterface) {
   for (const bridge of bridges) {
@@ -862,32 +883,27 @@ async function leaveBridge($: EngineInterface) {
   await refreshStatus($)
 }
 
-// Where the key, the backend and the flow come from, and what is wrong.
-async function setupLines($: EngineInterface): Promise<string[]> {
-  const c = await loadCredentials($).catch(() => undefined)
-  if (c) await resolveFlow($).catch(() => undefined)
-  const lines: string[] = []
-  if (c) {
-    lines.push(
-      c.source === 'options'
-        ? `Key: the apiKey option · backend ${c.url}`
-        : `Key: developer file ${devFileName} (no apiKey option set) · backend ${c.url} · accounts ${c.bridges.map(b => b.name).join(', ') || 'none'}`,
-    )
-  }
-  if (flow) {
-    const how = flowFrom === 'option' ? 'the flowId option' : flowFrom === 'remembered' ? 'picked earlier' : 'picked now'
-    lines.push(`Flow: "${flow.name}" (${flow.id}, ${how}). To use another, set flowId in /config → call-me.`)
-  }
+// /cm setup's details: which accounts, which folders, and the on/off switches.
+async function setupDetails($: EngineInterface): Promise<string[]> {
+  const allOff = (await $.store.get('allOff')) === true
+  const defaultOff = (await $.store.get('defaultOff')) === true
   const folders = parseFolders(optFolders, (await homeOf($)).home)
-  lines.push(folders.length ? `Folders: sessions under ${folders.join(', ')}` : 'Folders: every session (set folders in /config → call-me to limit)')
-  const problems = [setupProblem, ...new Set(paused.values())].filter((p): p is string => p !== undefined)
-  for (const p of new Set(problems)) lines.push(`Problem: ${p}`)
+  const lines = ['', 'Details']
+  if (bridges.length) {
+    const names = bridges.map(b => b.accountName)
+    const joined = bridges.filter(b => b.session).length
+    lines.push(`Accounts: ${accountsText(names)} (${joined === bridges.length ? 'connected' : joined === 0 ? 'not connected yet' : `${joined} of ${bridges.length} connected`})`)
+  }
+  lines.push(folders.length ? `Folders: only sessions under ${folders.join(', ')}` : 'Folders: every session (set folders in /config → call-me to limit)')
+  lines.push(`This session: ${sessionSwitch ? `turned ${sessionSwitch} with /cm ${sessionSwitch}` : 'follows the default'}`)
+  lines.push(`All sessions: ${allOff ? 'off (/cm on all turns them back on)' : 'on'}. New sessions start ${defaultOff ? 'off' : 'on'}.`)
   return lines
 }
 
 // /cm setup: each thing a user must have, checked against the backend, with the
-// next step for the first one missing. Reads only; changes nothing but a stale
-// "no Connectors flow" pause (it looks for the flow again at once).
+// next step for the first one missing. Reads only, then clears what it found
+// stale: a "no Connectors flow" or refused pause is tried again at once, so /cm
+// right after it shows the same live state (connecting, then on).
 type Probe = { status: number; text: string; body: unknown }
 
 async function probe($: EngineInterface, url: string, key: string, path: string): Promise<Probe | string> {
@@ -908,13 +924,39 @@ async function probe($: EngineInterface, url: string, key: string, path: string)
 }
 
 async function cmSetup($: EngineInterface): Promise<string> {
+  const checks = await setupChecks($)
+  // A refusal the checks no longer see (an owner turned Connectors on, a key was
+  // fixed) must not linger until the next retry: every paused loop tries again now.
+  // One still refused pauses again with the live reason.
+  await wakeAll($)
+  const after = await currentState($)
+  return [setupReport(checks), ...(await setupDetails($)), '', cmLines(after)].join('\n')
+}
+
+// After a wake: give the bridges a moment to register, so the line /cm setup ends
+// with is the live one (on), not "connecting".
+const WAKE_SETTLE_MS = 3_000
+
+async function wakeAll($: EngineInterface) {
+  paused.clear()
+  loggedPause.clear()
+  callsRetryAt = 0
+  flowRetryAt = 0
+  wakeBridges($)
+  await refreshStatus($)
+  if (!(await bridgeEnabled($)) || bridges.every(b => b.session)) return
+  const until = (await $.clock.now()) + WAKE_SETTLE_MS
+  while ((await $.clock.now()) < until && !bridges.every(b => b.session) && paused.size === 0) await $.clock.sleep(200)
+}
+
+async function setupChecks($: EngineInterface): Promise<Check[]> {
   const checks: Check[] = []
   let c: Credentials
   try {
     c = await loadCredentials($)
   } catch (err) {
-    checks.push({ name: 'API key', ok: false, detail: err instanceof Error ? err.message : String(err), next: KEY_STEP })
-    return setupReport(checks)
+    checks.push({ name: 'API key', ok: false, detail: err instanceof SetupProblem ? err.problem.reason : String(err), next: KEY_STEP })
+    return checks
   }
   checks.push({
     name: 'API key',
@@ -930,14 +972,14 @@ async function cmSetup($: EngineInterface): Promise<string> {
   if (!bridgeKey) {
     checks.push({ name: 'Backend', ok: true, detail: `${c.url} (${where})` })
     checks.push({ name: 'Connectors', ok: false, detail: `no TALKIF_BRIDGE_KEY in ${devFileName}`, next: KEY_STEP })
-    return setupReport(checks)
+    return checks
   }
 
   // The consent read doubles as the reachability and Connectors-scope check.
   const consent = await probe($, c.url, bridgeKey, '/connectors/consent')
   if (typeof consent === 'string') {
     checks.push({ name: 'Backend', ok: false, detail: `${c.url} (${where}) could not be reached: ${consent.slice(0, 160)}`, next: 'Check the network. The API URL option should be empty unless Talkif support gave you another address.' })
-    return setupReport(checks)
+    return checks
   }
   checks.push({ name: 'Backend', ok: true, detail: `${c.url} (${where})` })
   const parsed = consent.status === 200 ? parseConsent(consent.body) : undefined
@@ -971,7 +1013,7 @@ async function cmSetup($: EngineInterface): Promise<string> {
         ? { name: 'Flow', ok: false, detail: listed.slice(0, 160), next: 'Try /cm setup again in a minute.' }
         : failedProbe('Flow', 'Flows (read)', listed.status, listed.text),
     )
-    return setupReport(checks)
+    return checks
   }
   const published = publishedFlows(listed.body)
   const fromOption = optFlowId.trim()
@@ -984,7 +1026,7 @@ async function cmSetup($: EngineInterface): Promise<string> {
           ? { name: 'Flow', ok: false, detail: `the flowId option (${fromOption}) is not a flow in this account`, next: 'Fix flowId in /config → call-me, or empty it so the plugin picks the first published flow with a Connectors node.' }
           : failedProbe('Flow', 'Flows (read)', one.status, one.text),
       )
-      return setupReport(checks)
+      return checks
     }
     const detail = isRecord(one.body) ? one.body : {}
     const name = typeof detail.name === 'string' && detail.name ? detail.name : fromOption
@@ -995,11 +1037,11 @@ async function cmSetup($: EngineInterface): Promise<string> {
     } else {
       checks.push({ name: 'Flow', ok: true, detail: `"${name}" (${fromOption}, the flowId option)` })
     }
-    return setupReport(checks)
+    return checks
   }
   // The same pick the calls use (remembered, else the first Connectors flow), looked up again now.
   flowRetryAt = 0
-  if (setupProblem === NO_FLOW_PROBLEM) setupProblem = undefined
+  if (setupProblem?.reason === NO_FLOW_PROBLEM.reason) setupProblem = undefined
   if (flow && !(await flowDefinition($, flow.id).then(hasConnectorsNode, () => false))) flow = undefined
   const used = await resolveFlow($).catch(() => undefined)
   const how = flowFrom === 'remembered' ? 'picked earlier' : 'the first published flow with a Connectors node'
@@ -1013,56 +1055,71 @@ async function cmSetup($: EngineInterface): Promise<string> {
           next: FLOW_STEP,
         },
   )
-  return setupReport(checks)
+  return checks
 }
 
 async function cmStatus($: EngineInterface): Promise<string> {
-  const allOff = (await $.store.get('allOff')) === true
-  const defaultOff = (await $.store.get('defaultOff')) === true
-  const setup = await setupLines($)
   const state = await currentState($)
   await refreshStatus($)
-  const accounts = bridges.map(b => `${labelOf(b)}${b.accountName ? ` (${b.name} key)` : ''}${b.session ? '' : ' (not connected yet)'}`)
-  return [
-    cmHeadline(state),
-    ...setup,
-    ...(accounts.length ? [`Accounts: ${accounts.join(', ')}`] : []),
-    `This session: ${sessionSwitch ? `set here with /cm ${sessionSwitch}` : 'following the default'}.`,
-    `All sessions: ${allOff ? 'OFF (/cm on all to turn back on)' : 'on'}. New sessions start ${defaultOff ? 'off' : 'on'}.`,
-    'Commands: /cm setup · /cm on | off · /cm on all | off all · /cm default on | off · /cm traffic · /cm publish · /cm latency',
-  ].join('\n')
+  return cmLines(state)
 }
 
 async function cmRun($: EngineInterface, args: string): Promise<string> {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  const [a, b] = words
-  if (!a || a === 'status') return cmStatus($)
-  if (a === 'setup') return cmSetup($)
-  if (a === 'traffic') {
+  const [a, b, extra] = words
+  if (extra) return UNKNOWN_COMMAND
+  if (!a || (a === 'status' && !b)) return cmStatus($)
+  if (a === 'help' && !b) return CM_HELP
+  if (a === 'setup' && !b) return cmSetup($)
+  if (a === 'traffic' && !b) {
+    if (!debugMode) return 'Traffic is recorded only with the debug option: turn on "Debug traffic pane" in /plugin → call-me → Configure options.'
     await $.ui.open({ id: TRAFFIC_PANE, title: 'call-me traffic' })
     return 'call-me: traffic pane opened.'
   }
-  if (a === 'publish') {
+  if (a === 'publish' && !b) {
     await setAgentPrompt($, IDLE_PROMPT, 'call-me: assistant prompt')
-    return 'call-me: assistant prompt published to the flow\'s Connectors node.'
+    return 'call-me: call prompt published to your flow\'s Connectors node.'
   }
-  if (a === 'latency') return probeLatency($)
+  if (a === 'latency' && !b) return probeLatency($)
   if ((a === 'on' || a === 'off') && !b) {
     sessionSwitch = a
     if (a === 'off') await leaveBridge($)
+    else wakeBridges($)
     return cmStatus($)
   }
   if ((a === 'on' || a === 'off') && b === 'all') {
     await $.store.set('allOff', a === 'off')
     if (a === 'off') await leaveBridge($)
-    else sessionSwitch = undefined
+    else {
+      sessionSwitch = undefined
+      wakeBridges($)
+    }
     return cmStatus($)
   }
   if (a === 'default' && (b === 'on' || b === 'off')) {
     await $.store.set('defaultOff', b === 'off')
     return cmStatus($)
   }
-  return `call-me: unknown "/cm ${args.trim()}".\n${await cmStatus($)}`
+  return UNKNOWN_COMMAND
+}
+
+// The next poll of a bridge after `ms`; the wait is kept so wakeBridges can cut it short.
+function schedule($: EngineInterface, bridge: Bridge, ms: number) {
+  bridge.timer?.cancel()
+  bridge.timer = $.clock.after(ms, () => {
+    bridge.timer = undefined
+    void bridgePoll($, bridge)
+  })
+}
+
+// Every bridge waiting for its next try (refused, failing, switched off) tries now.
+// One with a poll in flight is left alone: it never runs two polls at once.
+function wakeBridges($: EngineInterface) {
+  for (const bridge of bridges) {
+    if (!bridge.timer) continue
+    bridge.failures = 0
+    schedule($, bridge, 0)
+  }
 }
 
 async function bridgePoll($: EngineInterface, bridge: Bridge) {
@@ -1071,7 +1128,7 @@ async function bridgePoll($: EngineInterface, bridge: Bridge) {
     if (!(await bridgeEnabled($))) {
       // Switched off (/cm): out of the bridge; look again shortly in case it is switched back on.
       await leaveBridge($)
-      $.clock.after(OFF_CHECK_MS, () => void bridgePoll($, bridge))
+      schedule($, bridge, OFF_CHECK_MS)
       return
     }
     if (!bridge.session && !(await bridgeRegister($, bridge))) throw new Error('register failed')
@@ -1101,11 +1158,11 @@ async function bridgePoll($: EngineInterface, bridge: Bridge) {
     }
     bridge.failures = 0
     await refreshStatus($)
-    $.clock.after(0, () => void bridgePoll($, bridge))
+    schedule($, bridge, 0)
   } catch (err) {
     if (err instanceof AccessRefused) {
-      pause($, loop, err.message)
-      $.clock.after(HEARTBEAT_MS, () => void bridgePoll($, bridge))
+      pause($, loop, err.problem)
+      schedule($, bridge, REFUSED_RETRY_MS)
       return
     }
     bridge.failures += 1
@@ -1115,7 +1172,7 @@ async function bridgePoll($: EngineInterface, bridge: Bridge) {
     if (bridge.failures === 3 || (bridge.failures > 3 && bridge.failures % 10 === 0)) {
       $.ui.log(`call-me bridge (${bridge.name}): ${String(err)}; retrying in ${backoff / 1000}s (failure ${bridge.failures} in a row)`)
     }
-    $.clock.after(backoff, () => void bridgePoll($, bridge))
+    schedule($, bridge, backoff)
   }
 }
 
@@ -1124,7 +1181,7 @@ async function bridgeStart($: EngineInterface) {
   for (const { name, key } of keys) {
     const bridge: Bridge = { name, key, session: undefined, failures: 0 }
     bridges.push(bridge)
-    $.clock.after(0, () => void bridgePoll($, bridge))
+    schedule($, bridge, 0)
   }
   watchSwitch($)
 }
@@ -1145,7 +1202,7 @@ type Ring = { ok: true; ringSecs: number; callId: string } | { ok: false; reason
 // travel with this one call as its briefing; the shared flow is never edited.
 async function ringOwner($: EngineInterface, briefing: string): Promise<Ring> {
   const bridge = personalBridge()
-  if (!bridge) return { ok: false, reason: setupProblem ?? 'no key for the personal account (TALKIF_BRIDGE_KEY)' }
+  if (!bridge) return { ok: false, reason: setupProblem ? problemText(setupProblem) : 'no key for the personal account (TALKIF_BRIDGE_KEY)' }
   const res = await bridgeFetch($, bridge, '/calls', 'POST', {
     flowId: await flowId($),
     caller: (await sessionLabel($)).slice(0, 40),
@@ -1178,14 +1235,21 @@ const scope = new CallTaskScope()
 
 // ---- Is it on? One status line, refreshed whenever what it shows can change ----
 
+async function offReason($: EngineInterface): Promise<CallMeState['off']> {
+  if ((await $.store.get('allOff')) === true) return 'all'
+  if (sessionSwitch) return sessionSwitch === 'off' ? 'session' : undefined
+  return (await $.store.get('defaultOff')) === true ? 'default' : undefined
+}
+
+// The one live state the status line, /cm and the end of /cm setup all read.
 async function currentState($: EngineInterface): Promise<CallMeState> {
   return {
-    notSetUp: !credentials || setupProblem !== undefined || paused.size > 0,
-    off: !(await bridgeEnabled($)),
+    problem: setupProblem ?? [...paused.values()][0],
+    off: await offReason($),
     onCall: pending !== undefined || scope.turnId !== undefined || callWork.size > 0,
-    // Two failed polls in a row: retrying, shown as reconnecting until a poll goes through.
-    registered: bridges.filter(b => b.session && b.failures < 2).map(labelOf),
-    accounts: bridges.map(labelOf),
+    // Two failed polls in a row: retrying, shown as connecting until a poll goes through.
+    registered: bridges.filter(b => b.session && b.failures < 2).map(b => b.accountName),
+    flowName: flow?.name,
   }
 }
 
@@ -1306,7 +1370,7 @@ export const register: Register = (on, options) => {
     // The folders option limits which sessions join (empty: every session).
     const { home } = await homeOf($)
     if (!folderAllowed(e.cwd, parseFolders(optFolders, home))) return next(e)
-    await $.command.register({ name: 'cm', description: 'call-me: status; setup (what is missing and the next step); on|off (this session), on all|off all, default on|off; traffic (debug pane), publish (call prompt), latency.' })
+    await $.command.register({ name: 'cm', description: 'call-me: is this session reachable by phone? /cm help lists the commands.' })
     await $.tool.register({
       name: TOOL,
       isDeferred: false,
@@ -1340,11 +1404,10 @@ export const register: Register = (on, options) => {
       if (!(err instanceof SetupProblem)) $.ui.log(`call-me bridge: start failed: ${String(err)}`)
     })
     let pollFailures = 0
-    let nextHeartbeat = 0
     $.clock.every(POLL_MS, () => {
       if (paused.has('calls')) {
-        if (Date.now() < nextHeartbeat) return
-        nextHeartbeat = Date.now() + HEARTBEAT_MS
+        if (Date.now() < callsRetryAt) return
+        callsRetryAt = Date.now() + REFUSED_RETRY_MS
       }
       poll($)
         .then(() => {
@@ -1354,8 +1417,8 @@ export const register: Register = (on, options) => {
         })
         .catch(err => {
           if (err instanceof AccessRefused) {
-            nextHeartbeat = Date.now() + HEARTBEAT_MS
-            pause($, 'calls', err.message)
+            callsRetryAt = Date.now() + REFUSED_RETRY_MS
+            pause($, 'calls', err.problem)
             return
           }
           if (err instanceof SetupProblem) return refreshStatus($) // shown once already; /cm status repeats it
