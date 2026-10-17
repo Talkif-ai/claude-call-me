@@ -1264,7 +1264,7 @@ async function currentState($: EngineInterface): Promise<CallMeState> {
     // Two failed polls in a row: retrying, shown as connecting until a poll goes through.
     registered: bridges.filter(b => b.session && b.failures < 2).map(b => b.accountName),
     flowName: flow?.name,
-    // Personal Agent's part of the status line (absent without an agent credential).
+    // Agent Bridge's part of the status line (absent without an agent credential).
     agent: personalAgentStatus(),
   }
 }
@@ -1295,7 +1295,7 @@ export const register: Register = (on, options) => {
   // Recent call summaries reach this session's prompt as one section.
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
-    // Personal Agent's sections (none without an agent credential).
+    // Agent Bridge's sections (none without an agent credential).
     const agent = agentSections()
     if (callNotes.length === 0) return agent.length ? { sections: [...result.sections, ...agent] } : result
     const text = [
@@ -1358,7 +1358,7 @@ export const register: Register = (on, options) => {
       void trace($, 'info', 'task', 'read-only', `refused ${e.tool}`)
       return { deny: denial }
     }
-    // A task from another connected agent (Personal Agent): refused or held for approval here.
+    // A task from another connected agent (Agent Bridge): refused or held for approval here.
     const peer = await agentToolDenial($, e)
     return peer ? { deny: peer } : next(e)
   }).catch(($, e, next) => {
@@ -1395,7 +1395,7 @@ export const register: Register = (on, options) => {
   })
 
   on('session.start', async ($, e, next) => {
-    // Personal Agent first: its own folder binding decides, not the folders option (off without an agent credential).
+    // Agent Bridge first: its own folder binding decides, not the folders option (off without an agent credential).
     await agentSessionStart($, e.cwd)
     // The folders option limits which sessions join (empty: every session).
     const { home } = await homeOf($)
@@ -1565,6 +1565,6 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // Personal Agent: this session as one of the person's connected agents (only with an agent credential).
+  // Agent Bridge: this session as one of the person's connected agents (only with an agent credential).
   registerPersonalAgent(on, options)
 }

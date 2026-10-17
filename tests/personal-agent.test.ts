@@ -413,7 +413,7 @@ test('setup: the agent credential, the API URL and where owner proofs come from'
   expect(dev).toEqual({ ok: true, credentials: { key: 'tif_agent_dev', url: 'http://localhost:8080', owner: undefined } })
   const devOwner = resolveAgentCredentials({ agentKey: '', apiUrl: '' }, 'TALKIF_AGENT_KEY=tif_agent_dev\nTALKIF_API_URL=http://localhost:8080\nTALKIF_AGENT_RP_ID=localhost\nTALKIF_AGENT_ORIGINS=https://localhost:5003')
   expect(devOwner?.ok && devOwner.credentials.owner).toEqual({ rpId: 'localhost', origins: ['https://localhost:5003'] })
-  // Personal Agent answers are read by agentRefusalReason, on agent routes only.
+  // Agent Bridge answers are read by agentRefusalReason, on agent routes only.
   expect(agentRefusalReason('{"code":"forbidden","meta":{"refusal":"paused"}}')?.reason).toMatch(/paused/)
   expect(agentRefusalReason('{"meta":{"refusal":"credential_revoked"}}')?.reason).toMatch(/revoked/)
   expect(agentRefusalReason('{"meta":{"refusal":"key_already_set"}}')?.next).toMatch(/rotate/)
@@ -773,7 +773,7 @@ test('callerName reaches the ask prompt (regression)', { options: { apiKey: 'tif
 })
 
 const AP = '0192f000-0000-7000-8000-00000000c001'
-const PANE_PROPS = { title: 'Personal Agent', isFocused: true, bodyColumns: 100, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
+const PANE_PROPS = { title: 'Agent Bridge', isFocused: true, bodyColumns: 100, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
 
 test('approval pane: approve is offered only for local_write; an outward action offers deny only', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
   const { f, hub, peerKeys, clock, release, releaseApprovals } = await connectedSession($, on, { mode: 'ask_everything' })

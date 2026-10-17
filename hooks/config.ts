@@ -191,24 +191,24 @@ export function refusalReason(status: number, text: string): Problem | undefined
   return { reason: 'the API key is not allowed to do this', next: 'run /cm setup to see what is missing' }
 }
 
-const AGENT_SETTINGS = 'the Talkif dashboard (Settings → Personal Agent)'
+const AGENT_SETTINGS = 'the Talkif dashboard (Settings → Agent Bridge)'
 const AGENT_REFUSALS: ReadonlyArray<readonly [string, Problem]> = [
-  ['not_enabled', { reason: 'Personal Agent is not turned on for your Talkif account', next: 'ask Talkif to turn it on for you' }],
+  ['not_enabled', { reason: 'Agent Bridge is not turned on for your Talkif account', next: 'ask Talkif to turn it on for you' }],
   ['paused', { reason: 'your connected agents are paused', next: `resume them in ${AGENT_SETTINGS}` }],
-  ['credential_revoked', { reason: 'the Personal Agent credential was revoked', next: `create a new one in ${AGENT_SETTINGS} and paste it in /plugin → call-me → Configure options` }],
+  ['credential_revoked', { reason: 'the Agent Bridge credential was revoked', next: `create a new one in ${AGENT_SETTINGS} and paste it in /plugin → call-me → Configure options` }],
   ['key_already_set', { reason: 'this connected agent already has keys from another machine or install', next: `rotate its credential in ${AGENT_SETTINGS}, then paste the new one here` }],
   ['session_superseded', { reason: 'another session now holds this connected agent', next: 'nothing: this session stands by and takes over when the other one stops' }],
   ['owner_proof_required', { reason: 'this needs your approval with a passkey', next: `approve it in ${AGENT_SETTINGS} (add a passkey first if you have none)` }],
   ['sender_may_not_assign_writes', { reason: 'that agent may not give tasks that change files', next: `allow it in ${AGENT_SETTINGS} if you want it to` }],
 ]
 
-/** A Personal Agent refusal in a hub answer (its `meta.refusal`), said plainly; undefined for any other answer. */
+/** An Agent Bridge refusal in a hub answer (its `meta.refusal`), said plainly; undefined for any other answer. */
 export function agentRefusalReason(text: string): Problem | undefined {
   const code = /"refusal"\s*:\s*"([a-z_]+)"/.exec(text)?.[1]
   return code === undefined ? undefined : AGENT_REFUSALS.find(([c]) => c === code)?.[1]
 }
 
-// ---- Personal Agent: the agent credential and where owner proofs come from ----
+// ---- Agent Bridge: the agent credential and where owner proofs come from ----
 
 /** A person-bound agent credential: from the agentKey option, else TALKIF_AGENT_KEY in the developer file. */
 export type AgentCredentials = {
@@ -224,7 +224,7 @@ export const AGENT_KEY_PREFIX = 'tif_agent_'
 export const TALKIF_OWNER_ORIGIN = { rpId: 'talkif.ai', origins: ['https://app.talkif.ai', 'https://talkif.ai'] } as const
 
 /**
- * The agent credential, or undefined when none is set (Personal Agent is off and
+ * The agent credential, or undefined when none is set (Agent Bridge is off and
  * nothing of it runs). Owner proofs come from Talkif's own site on the default
  * API; on another API URL only from TALKIF_AGENT_RP_ID / TALKIF_AGENT_ORIGINS
  * in the developer file.
@@ -234,7 +234,7 @@ export function resolveAgentCredentials(options: { agentKey: string; apiUrl: str
   const key = options.agentKey.trim() || (vars.TALKIF_AGENT_KEY ?? '').trim()
   if (!key) return undefined
   if (!key.startsWith(AGENT_KEY_PREFIX)) {
-    return { ok: false, problem: { reason: 'the Personal Agent credential is not a tif_agent_ credential', next: 'paste the credential Talkif showed when you added the agent (it starts with tif_agent_)' } }
+    return { ok: false, problem: { reason: 'the Agent Bridge credential is not a tif_agent_ credential', next: 'paste the credential Talkif showed when you added the agent (it starts with tif_agent_)' } }
   }
   let url = normalizeApiUrl(options.apiUrl)
   if (url === undefined) return { ok: false, problem: badUrlProblem(options.apiUrl) }
@@ -370,7 +370,7 @@ export type CallMeState = {
   registered: readonly (string | undefined)[]
   /** The name of the flow calls run on, when known. */
   flowName: string | undefined
-  /** The Personal Agent part of the status line; undefined without an agent credential. */
+  /** The Agent Bridge part of the status line; undefined without an agent credential. */
   agent?: string
 }
 
@@ -385,7 +385,7 @@ const sentence = (text: string): string => {
  */
 export function statusText(state: CallMeState): string {
   if (state.agent === undefined) return callMeStatusText(state)
-  // Personal Agent alone (no Connectors key): its part only, not a "not set up" for calls.
+  // Agent Bridge alone (no Connectors key): its part only, not a "not set up" for calls.
   if (state.problem?.reason === NO_KEY_PROBLEM.reason) return state.agent
   return `${callMeStatusText(state)} · ${state.agent}`
 }

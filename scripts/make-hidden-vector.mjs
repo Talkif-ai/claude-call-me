@@ -1,5 +1,5 @@
 // Writes test-vectors/hidden.json: how a client and the dashboard show an action's
-// hidden characters before anyone approves it (Personal Agent spec §6.3).
+// hidden characters before anyone approves it (Agent Bridge spec §6.3).
 // Deterministic: run it again and the file is byte-for-byte the same.
 //
 //   node scripts/make-hidden-vector.mjs > test-vectors/hidden.json

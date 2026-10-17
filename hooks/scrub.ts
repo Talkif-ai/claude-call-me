@@ -1,4 +1,4 @@
-// Personal Agent: secret-looking text never goes into a sealed message or an action
+// Agent Bridge: secret-looking text never goes into a sealed message or an action
 // shown for approval. The patterns are the shared test-vectors/secrets.json (copied
 // byte for byte from talkif-agents, mirrored into shared-tables.ts); this file is their
 // one implementation here. On top of the patterns, this agent's own credential and

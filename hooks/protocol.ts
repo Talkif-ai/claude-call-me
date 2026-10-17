@@ -1,4 +1,4 @@
-// Personal Agent: the shapes Talkif's hub and this plugin exchange, and the pure
+// Agent Bridge: the shapes Talkif's hub and this plugin exchange, and the pure
 // decisions about them (what to accept, what to send, which permission a peer task
 // runs with, how an owner's passkey proof is checked, what the status line says).
 // No engine calls here, so every rule is tested on its own.
@@ -489,7 +489,7 @@ export function verifyOwnerProof(proof: OwnerProof, approvalId: string, actionHa
 
 export type AgentStatus = { online: number; inbox: number; running: number; approvals: number; note: string | undefined }
 
-/** The Personal Agent part of the status line. `note` (bound elsewhere, standby, a problem) replaces the counts. */
+/** The Agent Bridge part of the status line. `note` (bound elsewhere, standby, a problem) replaces the counts. */
 export function agentStatusText(s: AgentStatus): string {
   if (s.note) return `Talkif · ${s.note}`
   const parts = [`${s.online} agent${s.online === 1 ? '' : 's'} online`]

@@ -12,7 +12,7 @@ export type TrafficEntry = {
   detail: string
 }
 
-/** One card of the Personal Agent pane: something only the person at this terminal answers. */
+/** One card of the Agent Bridge pane: something only the person at this terminal answers. */
 export type AgentCard = {
   id: string
   title: string
