@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.25.1 — 2026-10-17
+
+- `/cm help` lists the commands in two aligned columns.
+
 ## 0.25.0 — 2026-10-17
 
 - **Fix: call-me no longer stays "not set up" after the problem is fixed.** When Talkif refused the key (for example Connectors not turned on yet), call-me waited 5 minutes before trying again, and `/cm setup` could report everything ok while `/cm` still said "Connectors are not turned on". Now it tries again every 30 seconds and comes back on by itself; `/cm setup` tries again at once and ends with the same live line `/cm` shows, so the two never disagree.

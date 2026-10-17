@@ -285,12 +285,19 @@ test('/cm is two or three lines: on, off, connecting or not set up', async () =>
   }
 })
 
-test('/cm help: one line per command, the common ones first', async () => {
+test('/cm help: one aligned line per command, the common ones first', async () => {
   const lines = CM_HELP.split('\n')
-  expect(lines[1]).toBe('/cm — is this session reachable?')
-  expect(lines.indexOf('Advanced:')).toBeGreaterThan(lines.findIndex(l => l.startsWith('/cm traffic')))
+  expect(lines[0]).toBe('Commands')
+  expect(lines[1]?.trim().startsWith('/cm ')).toBe(true)
+  expect(lines[1]).toContain('is this session reachable?')
+  expect(lines.indexOf('Advanced')).toBeGreaterThan(lines.findIndex(l => l.trim().startsWith('/cm traffic')))
+  const rows = lines.filter(l => l.trim().startsWith('/cm'))
+  const starts = new Set(rows.map(l => l.length - l.trimStart().length))
+  expect(starts.size).toBe(1)
+  const descriptionColumns = new Set(rows.map(l => l.indexOf(l.trim().split(/ {2,}/u)[1] ?? '')))
+  expect(descriptionColumns.size).toBe(1)
   for (const cmd of ['/cm on | off', '/cm on all | off all', '/cm default on | off', '/cm setup', '/cm traffic', '/cm publish', '/cm latency']) {
-    expect(lines.some(l => l.startsWith(`${cmd} — `))).toBe(true)
+    expect(rows.some(l => l.trim().startsWith(`${cmd}  `))).toBe(true)
   }
   expect(UNKNOWN_COMMAND).toBe('Unknown command. See /cm help.')
 })

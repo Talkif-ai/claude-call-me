@@ -341,20 +341,23 @@ export function cmLines(state: CallMeState): string {
   return [`${head} This session can be reached through ${accountsText(state.registered)}.`, call, MORE].join('\n')
 }
 
-/** /cm help: one plain line per command, the common ones first. */
-export const CM_HELP = [
-  'call-me commands',
-  '/cm — is this session reachable?',
-  '/cm on | off — make this session reachable / not reachable',
-  '/cm on all | off all — all open sessions on / off',
-  '/cm default on | off — how new sessions start',
-  '/cm setup — check the connection and show what\'s missing',
-  '/cm traffic — see what went back and forth (needs the debug option)',
-  '',
-  'Advanced:',
-  "/cm publish — write the call prompt into your flow's Connectors node",
-  '/cm latency — time a spoken answer',
-].join('\n')
+/** /cm help: one plain line per command, the common ones first, descriptions in one column. */
+const HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
+  ['/cm', 'is this session reachable?'],
+  ['/cm on | off', 'make this session reachable / not reachable'],
+  ['/cm on all | off all', 'all open sessions on / off'],
+  ['/cm default on | off', 'how new sessions start'],
+  ['/cm setup', "check the connection and show what's missing"],
+  ['/cm traffic', 'see what went back and forth (needs the debug option)'],
+]
+const HELP_ADVANCED: ReadonlyArray<readonly [string, string]> = [
+  ['/cm publish', "write the call prompt into your flow's Connectors node"],
+  ['/cm latency', 'time a spoken answer'],
+]
+const HELP_WIDTH = Math.max(...[...HELP_ROWS, ...HELP_ADVANCED].map(([cmd]) => cmd.length)) + 2
+const helpRow = ([cmd, text]: readonly [string, string]): string => `  ${cmd.padEnd(HELP_WIDTH)}${text}`
+
+export const CM_HELP = ['Commands', ...HELP_ROWS.map(helpRow), '', 'Advanced', ...HELP_ADVANCED.map(helpRow)].join('\n')
 
 export const UNKNOWN_COMMAND = 'Unknown command. See /cm help.'
 

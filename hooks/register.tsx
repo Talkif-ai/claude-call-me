@@ -41,7 +41,7 @@ import type { CallMeState, Check, Credentials, FlowRef, Problem } from './config
 const TOOL = 'call_me'
 // Sent as the User-Agent on every request to the backend and the bridge. Kept equal
 // to .claude-plugin/plugin.json's version: bump both together.
-export const VERSION = '0.25.0'
+export const VERSION = '0.25.1'
 const USER_AGENT = `talkif-call-me/${VERSION}`
 // Debug pane: this session's bridge traffic, newest last (`/cm traffic`; recorded only with the debug option).
 const TRAFFIC_PANE = 'call-me-traffic'
