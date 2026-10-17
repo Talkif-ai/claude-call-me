@@ -191,11 +191,11 @@ export function refusalReason(status: number, text: string): Problem | undefined
   return { reason: 'the API key is not allowed to do this', next: 'run /cm setup to see what is missing' }
 }
 
-const AGENT_SETTINGS = 'the Talkif dashboard (Settings → Kif)'
+const AGENT_SETTINGS = 'the Talkif dashboard (Settings → Personal Agent)'
 const AGENT_REFUSALS: ReadonlyArray<readonly [string, Problem]> = [
-  ['not_enabled', { reason: 'Kif is not turned on for your Talkif account', next: 'ask Talkif to turn it on for you' }],
+  ['not_enabled', { reason: 'Personal Agent is not turned on for your Talkif account', next: 'ask Talkif to turn it on for you' }],
   ['paused', { reason: 'your connected agents are paused', next: `resume them in ${AGENT_SETTINGS}` }],
-  ['credential_revoked', { reason: 'the Kif credential was revoked', next: `create a new one in ${AGENT_SETTINGS} and paste it in /plugin → call-me → Configure options` }],
+  ['credential_revoked', { reason: 'the Personal Agent credential was revoked', next: `create a new one in ${AGENT_SETTINGS} and paste it in /plugin → call-me → Configure options` }],
   ['key_already_set', { reason: 'this connected agent already has keys from another machine or install', next: `rotate its credential in ${AGENT_SETTINGS}, then paste the new one here` }],
   ['session_superseded', { reason: 'another session now holds this connected agent', next: 'nothing: this session stands by and takes over when the other one stops' }],
   ['owner_proof_required', { reason: 'this needs your approval with a passkey', next: `approve it in ${AGENT_SETTINGS} (add a passkey first if you have none)` }],
@@ -234,7 +234,7 @@ export function resolveAgentCredentials(options: { agentKey: string; apiUrl: str
   const key = options.agentKey.trim() || (vars.TALKIF_AGENT_KEY ?? '').trim()
   if (!key) return undefined
   if (!key.startsWith(AGENT_KEY_PREFIX)) {
-    return { ok: false, problem: { reason: 'the Kif credential is not a tif_agent_ credential', next: 'paste the credential Talkif showed when you added the agent (it starts with tif_agent_)' } }
+    return { ok: false, problem: { reason: 'the Personal Agent credential is not a tif_agent_ credential', next: 'paste the credential Talkif showed when you added the agent (it starts with tif_agent_)' } }
   }
   let url = normalizeApiUrl(options.apiUrl)
   if (url === undefined) return { ok: false, problem: badUrlProblem(options.apiUrl) }
