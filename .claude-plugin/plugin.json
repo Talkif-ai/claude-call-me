@@ -1,6 +1,6 @@
 {
   "name": "call-me",
-  "version": "0.25.2",
+  "version": "0.26.0",
   "description": "Talk to your Claude Code sessions by voice through the Talkif app: ask them questions, give them tasks, and let them call you when they need you.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -55,10 +55,36 @@
         "session"
       ],
       "default": "read-only"
+    },
+    "agentKey": {
+      "type": "string",
+      "title": "Personal Agent credential",
+      "description": "Personal Agent credential (tif_agent_…) from Talkif settings. Makes this session one of your connected agents. Stored in your keychain, never in settings.json. Empty: Personal Agent is off.",
+      "sensitive": true
+    },
+    "peerTasks": {
+      "type": "string",
+      "title": "Tasks from your other agents",
+      "description": "read-only: tasks from your other connected agents never change anything on this machine. follow-hub: they may make local changes when you set that agent to auto in Talkif and the task was granted a write; outward actions (push, deploy, messages, secrets) always wait for your approval.",
+      "options": [
+        "read-only",
+        "follow-hub"
+      ],
+      "default": "read-only"
+    },
+    "voiceApprovals": {
+      "type": "string",
+      "title": "Approvals said on a call",
+      "description": "deny: an outward action (push, merge, sending) approved by voice on a Talkif call does not run here; only your passkey approves it. allow: a voice yes on your own call is enough for those (never for secrets, payments or deploys).",
+      "options": [
+        "deny",
+        "allow"
+      ],
+      "default": "deny"
     }
   },
   "author": {
     "name": "Talkif"
   },
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

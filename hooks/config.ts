@@ -177,6 +177,9 @@ export function folderAllowed(cwd: string, folders: readonly string[]): boolean 
 
 /** A 401/403 from the backend, said so the user knows what to do; undefined for any other status. */
 export function refusalReason(status: number, text: string): Problem | undefined {
+  // Personal Agent answers (agent credential routes): the refusal names the fix.
+  const agent = agentRefusalReason(text)
+  if (agent) return agent
   if (status !== 401 && status !== 403) return undefined
   if (text.includes('connectors_consent_required')) {
     return { reason: 'Connectors are not turned on for your Talkif account', next: 'an owner or admin turns them on in the Talkif dashboard (Developer → Integrations)' }
@@ -189,6 +192,67 @@ export function refusalReason(status: number, text: string): Problem | undefined
   }
   if (status === 401) return { reason: 'the API key was refused (expired or revoked?)', next: `create a new key in Developer → Credentials and ${PASTE_KEY}` }
   return { reason: 'the API key is not allowed to do this', next: 'run /cm setup to see what is missing' }
+}
+
+const AGENT_SETTINGS = 'the Talkif dashboard (Settings → Personal Agent)'
+const AGENT_REFUSALS: ReadonlyArray<readonly [string, Problem]> = [
+  ['not_enabled', { reason: 'Personal Agent is not turned on for your Talkif account', next: 'ask Talkif to turn it on for you' }],
+  ['paused', { reason: 'your connected agents are paused', next: `resume them in ${AGENT_SETTINGS}` }],
+  ['credential_revoked', { reason: 'the Personal Agent credential was revoked', next: `create a new one in ${AGENT_SETTINGS} and paste it in /plugin → call-me → Configure options` }],
+  ['key_already_set', { reason: 'this connected agent already has keys from another machine or install', next: `rotate its credential in ${AGENT_SETTINGS}, then paste the new one here` }],
+  ['session_superseded', { reason: 'another session now holds this connected agent', next: 'nothing: this session stands by and takes over when the other one stops' }],
+  ['owner_proof_required', { reason: 'this needs your approval with a passkey', next: `approve it in ${AGENT_SETTINGS} (add a passkey first if you have none)` }],
+  ['sender_may_not_assign_writes', { reason: 'that agent may not give tasks that change files', next: `allow it in ${AGENT_SETTINGS} if you want it to` }],
+]
+
+/** A Personal Agent refusal in a hub answer (its `meta.refusal`), said plainly; undefined for any other answer. */
+export function agentRefusalReason(text: string): Problem | undefined {
+  const code = /"refusal"\s*:\s*"([a-z_]+)"/.exec(text)?.[1]
+  return code === undefined ? undefined : AGENT_REFUSALS.find(([c]) => c === code)?.[1]
+}
+
+// ---- Personal Agent: the agent credential and where owner proofs come from ----
+
+/** A person-bound agent credential: from the agentKey option, else TALKIF_AGENT_KEY in the developer file. */
+export type AgentCredentials = {
+  key: string
+  url: string
+  /** The passkey site an owner proof must come from; undefined: outward actions never run here. */
+  owner: { rpId: string; origins: string[] } | undefined
+}
+
+export const AGENT_KEY_PREFIX = 'tif_agent_'
+
+/** Where the person's passkey approvals come from on Talkif itself (the dashboard's site). */
+export const TALKIF_OWNER_ORIGIN = { rpId: 'talkif.ai', origins: ['https://app.talkif.ai', 'https://talkif.ai'] } as const
+
+/**
+ * The agent credential, or undefined when none is set (Personal Agent is off and
+ * nothing of it runs). Owner proofs come from Talkif's own site on the default
+ * API; on another API URL only from TALKIF_AGENT_RP_ID / TALKIF_AGENT_ORIGINS
+ * in the developer file.
+ */
+export function resolveAgentCredentials(options: { agentKey: string; apiUrl: string }, devFile: string | undefined): { ok: true; credentials: AgentCredentials } | { ok: false; problem: Problem } | undefined {
+  const vars = devFile === undefined ? {} : parseEnvFile(devFile)
+  const key = options.agentKey.trim() || (vars.TALKIF_AGENT_KEY ?? '').trim()
+  if (!key) return undefined
+  if (!key.startsWith(AGENT_KEY_PREFIX)) {
+    return { ok: false, problem: { reason: 'the Personal Agent credential is not a tif_agent_ credential', next: 'paste the credential Talkif showed when you added the agent (it starts with tif_agent_)' } }
+  }
+  let url = normalizeApiUrl(options.apiUrl)
+  if (url === undefined) return { ok: false, problem: badUrlProblem(options.apiUrl) }
+  if (!options.apiUrl.trim() && vars.TALKIF_API_URL) {
+    url = normalizeApiUrl(vars.TALKIF_API_URL)
+    if (url === undefined) return { ok: false, problem: { reason: 'TALKIF_API_URL in the developer file is not an http:// or https:// address', next: 'fix it or remove the line' } }
+  }
+  const origins = (vars.TALKIF_AGENT_ORIGINS ?? '').split(',').map(o => o.trim()).filter(o => /^https:\/\/[^/\s]+$/.test(o))
+  const owner =
+    url === DEFAULT_API_URL
+      ? { rpId: TALKIF_OWNER_ORIGIN.rpId, origins: [...TALKIF_OWNER_ORIGIN.origins] }
+      : vars.TALKIF_AGENT_RP_ID && origins.length
+        ? { rpId: vars.TALKIF_AGENT_RP_ID.trim(), origins }
+        : undefined
+  return { ok: true, credentials: { key, url, owner } }
 }
 
 // ---- /cm setup: one check per thing a user must have, each with its next step ----
@@ -309,6 +373,8 @@ export type CallMeState = {
   registered: readonly (string | undefined)[]
   /** The name of the flow calls run on, when known. */
   flowName: string | undefined
+  /** The Personal Agent part of the status line; undefined without an agent credential. */
+  agent?: string
 }
 
 const sentence = (text: string): string => {
@@ -321,6 +387,13 @@ const sentence = (text: string): string => {
  * connecting (no account registered yet, or every one retrying), on.
  */
 export function statusText(state: CallMeState): string {
+  if (state.agent === undefined) return callMeStatusText(state)
+  // Personal Agent alone (no Connectors key): its part only, not a "not set up" for calls.
+  if (state.problem?.reason === NO_KEY_PROBLEM.reason) return state.agent
+  return `${callMeStatusText(state)} · ${state.agent}`
+}
+
+function callMeStatusText(state: CallMeState): string {
   if (state.problem) return '☎ call-me: not set up — run /cm setup'
   if (state.off) return '☎ call-me: off'
   if (state.onCall) return '☎ call-me: on a call'

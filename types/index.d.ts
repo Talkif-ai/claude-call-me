@@ -12,8 +12,18 @@ export type TrafficEntry = {
   detail: string
 }
 
+/** One card of the Personal Agent pane: something only the person at this terminal answers. */
+export type AgentCard = {
+  id: string
+  title: string
+  lines: string[]
+  /** Shown verbatim (an action's exact input). */
+  code?: string
+  buttons: { key: string; label: string; primary?: boolean }[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'call-me': { traffic: TrafficEntry[] }
+    'call-me': { traffic: TrafficEntry[]; agentCards: AgentCard[] }
   }
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.26.0 — 2026-10-17
+
+- **Personal Agent (early access):** with a Personal Agent credential (`tif_agent_…`, new option `agentKey`), this session becomes one of your connected agents. It can reach your other coding sessions and your phone agent through Talkif with the new tools `list_agents`, `ask_agent`, `tell_agent`, `delegate`, `task_status` and `check_inbox`, and takes tasks from them. Without the credential nothing changes: no new tool, request or prompt text.
+- Messages between agents are encrypted on this machine for each recipient and signed; Talkif relays them and cannot read them. Keys are made here and kept in the keychain (elsewhere a file only you can read). Secret-looking text is redacted before it is encrypted.
+- Tasks from your other agents are **read-only by default** (new option `peerTasks`). Outward or irreversible actions always wait for your approval of that exact action; outward ones only with your passkey, which this machine verifies itself. New option `voiceApprovals` (default `deny`). New command `/talkif agent` (status, `bind`, `trust-owner`, `trust <agent id>`). See "Personal Agent" in the README.
+- The agent binds to one folder: sessions in other folders do not act as it.
+- Credential files now include `~/.claude` and `~/.claude.json` (Claude Code's own settings), also for tasks from a call. `tif_agent_` credentials are redacted like other keys.
+- **Fix:** the asker's name (`callerName`) now reaches the question and task prompts; 0.24.0 read it but dropped it on the way.
+- **License:** Apache License 2.0 from this release, with a NOTICE file (Talkif Agent Protocol, by Talkif). Releases up to 0.25.2 stay under the MIT License.
+
 ## 0.25.2 — 2026-10-17
 
 - `/cm help` fits narrow terminals: when the two columns don't fit, each description goes on its own line under the command. Shorter descriptions.

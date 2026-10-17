@@ -52,9 +52,13 @@ const normalizePath = (path: string): string => {
   return out.join('/').replace(/\/+$/, '')
 }
 
+// Under the home folder: Claude Code's own settings and plugin options (~/.claude,
+// ~/.claude.json), which can hold keys. A project's own .claude folder is not this.
+const HOME_AGENT_CONFIG = /^(?:~|\/(?:Users|home)\/[^/]+|\/root)\/(?:\.claude(?:\/|$)|\.claude\.json$)/
+
 const isLiteralCredentialPath = (clean: string): boolean => {
   if (!clean) return false
-  if (CREDENTIAL_DIR.test(clean)) return true
+  if (CREDENTIAL_DIR.test(clean) || HOME_AGENT_CONFIG.test(clean)) return true
   return CREDENTIAL_FILE.test(clean.split('/').pop() ?? '')
 }
 
@@ -226,11 +230,24 @@ const readsOnly = (call: GuardedCall): boolean => {
   return READ_TOOLS.has(call.tool)
 }
 
-/** The deny text for a tool call, or undefined when the call only reads. */
-export const readOnlyDenial = (call: GuardedCall): string | undefined => {
+/** The deny text for a tool call, or undefined when the call only reads. `from`: who gave the task. */
+export const readOnlyDenial = (call: GuardedCall, from: 'call' | 'peer' = 'call'): string | undefined => {
+  if (from === 'peer') {
+    if (readsCredential(call)) {
+      return (
+        `${call.tool} was not run: this task came from another connected agent, and credential files (~/.ssh, ~/.aws, ~/.config/gcloud, ~/.config/talkif, ~/.claude, .env files, keys, .netrc, credentials.json) are never read during one. ` +
+        'Do not try another way to read it. Say which file you would check and why.'
+      )
+    }
+    if (readsOnly(call)) return undefined
+    return (
+      `${call.tool} was not run: this task came from another connected agent and runs read-only on this machine (call-me option peerTasks, or the agent's mode in Talkif). ` +
+      'Only reading tools work, in the foreground. Do not try another way to make the change. Finish with what you found and say exactly what you would change.'
+    )
+  }
   if (readsCredential(call)) {
     return (
-      `${call.tool} was not run: this task came from a phone call, and credential files (~/.ssh, ~/.aws, ~/.config/gcloud, ~/.config/talkif, .env files, keys, .netrc, credentials.json) are never read during one. ` +
+      `${call.tool} was not run: this task came from a phone call, and credential files (~/.ssh, ~/.aws, ~/.config/gcloud, ~/.config/talkif, ~/.claude, .env files, keys, .netrc, credentials.json) are never read during one. ` +
       'Do not try another way to read it. Say which file you would check and why, so the developer can look in the terminal.'
     )
   }

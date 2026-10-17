@@ -118,7 +118,7 @@ When Talkif refuses the key (Connectors off, a missing scope, an IP allowlist), 
 ## Safety
 
 - **Tasks from a call are read-only by default.** While such a task runs, only tools that read work: reading files, searching, `git status`, `git log`, `git diff` and a few other read-only commands. Anything that changes something is refused, and the session tells you what it would change. You approve that at the terminal. To let call tasks use the session's normal Claude Code permissions, set the option `callTasks` to `session`. The plugin never grants a permission by itself.
-- **Credential files are not read during a call task**: for example `~/.ssh`, `~/.aws`, `.env` files and key files.
+- **Credential files are not read during a call task**: for example `~/.ssh`, `~/.aws`, `~/.claude`, `.env` files and key files.
 - **Secrets are kept off the call, as well as possible.** The voice agent and the sessions are told never to say keys, tokens or passwords. The plugin also replaces text that looks like a secret with `[redacted]` before it leaves your machine. This is best effort: a secret in an unusual format can still get through.
 - **Only proven callers count.** A call reaches sessions only when it is started from the Talkif app or dashboard while signed in, when a session places it to you, or when you confirm on your signed-in Talkif app that a call from your phone number is you. Any other call from a phone number, an embed or an API key does not.
 - **Call text is treated as data.** Transcripts and call summaries reach the session marked as text from a call, not as instructions.
@@ -163,6 +163,30 @@ Change them in `/config` → call-me. The API key is in `/plugin` → Installed 
 | `callback` | on | ring you when a task from a call ends after you hung up |
 | `parallel` | off | queue more tasks from a call while one runs, instead of saying "still on the last task" |
 | `debug` | off | record this session's traffic for `/cm traffic` |
+| `agentKey` | empty | Personal Agent credential (`tif_agent_…`), kept in the keychain. Empty: Personal Agent is off |
+| `peerTasks` | `read-only` | `read-only`: tasks from your other connected agents never change anything here. `follow-hub`: they may make local changes when you allow it in Talkif |
+| `voiceApprovals` | `deny` | `allow`: a yes said on your own Talkif call approves an outward action (push, merge, sending) here; never secrets, payments or deploys |
+
+## Personal Agent (connected agents)
+
+Early access: Talkif turns it on for your account. Your coding sessions, on any of your machines, and your phone agent become **connected agents**: they can ask each other questions, send notes and give each other tasks, through Talkif.
+
+**Setup.** In the Talkif dashboard (Settings → Personal Agent) add an agent for this machine and copy its credential (`tif_agent_…`, shown once). Paste it in `/plugin` → Installed → call-me → Configure options → **Personal Agent credential**. The first session that connects binds the agent to its folder (the git repository, else the folder); sessions in other folders stay out of it. `/talkif agent bind` moves the binding to the current folder.
+
+**What Talkif sees.** Talkif relays messages and keeps who sent what to whom and when, never what they say: each message is encrypted on this machine for each recipient agent (X25519, HKDF-SHA256, AES-256-GCM) and signed (Ed25519). The keys are made here; the private ones stay in the macOS keychain (elsewhere a file only you can read, under `~/.config/talkif/agent/`). Text that looks like a secret is replaced with `[redacted]` before it is encrypted. Your phone agent is the one exception: Talkif holds its key, because it speaks on your calls.
+
+**Tools the session gets:** `list_agents`, `ask_agent`, `tell_agent`, `delegate`, `task_status`, `check_inbox`. There is no tool that approves or grants anything.
+
+**Tasks from your other agents** arrive as prompts marked as coming from another agent, and their text is treated as data. They run **read-only by default** (option `peerTasks`). With `peerTasks: follow-hub` and the agent set to *auto* in Talkif, a task Talkif granted a write may change files in this folder, under your normal Claude Code permissions. Anything outward or irreversible (push, merge, deploy, sending messages, deleting outside the folder, secrets, payments) is held until **you** approve that exact action:
+
+- local changes and unclear commands: approve or deny in the terminal pane, or on the dashboard;
+- outward, irreversible, secret, payment and deploy actions: only with your passkey on the dashboard. The terminal offers *Deny* only.
+
+This machine checks the passkey's signature itself against the passkeys you confirmed here (`/talkif agent trust-owner` compares their fingerprints with the dashboard), so Talkif alone cannot approve anything. Every approval is for one action only and expires after 10 minutes.
+
+**Keys of your other agents** are pinned the first time this machine sees them. If one changes, nothing is sent to or accepted from that agent until you compare fingerprints with the dashboard and run `/talkif agent trust <agent id>`.
+
+**Status line:** `Talkif · 3 agents online · inbox 1 · 2 running · 1 approval`. `/talkif agent` shows the details.
 
 ## Other connectors
 
@@ -212,12 +236,15 @@ TALKIF_API_URL=https://…  # optional: empty means https://api.talkif.ai
 TALKIF_API_KEY=…         # scopes: calls, flows
 TALKIF_BRIDGE_KEY=…      # scope: Connectors (your personal account)
 TALKIF_ORG_BRIDGE_KEY=…  # optional: Connectors in another account (any TALKIF_<NAME>_BRIDGE_KEY)
+TALKIF_AGENT_KEY=…       # optional: Personal Agent credential, when the agentKey option is empty
+TALKIF_AGENT_RP_ID=…     # Personal Agent on another API URL: the passkey site owner approvals come from
+TALKIF_AGENT_ORIGINS=…   #   and its https origins, comma-separated (without both, outward actions never run)
 ```
 
 The **API URL (advanced)** option, when set, beats the file's `TALKIF_API_URL`; `flowId` and `folders` apply as usual. The connector scripts read the same file as a fallback (`--env-file PATH` picks another) and also take `--url URL` (or `TALKIF_API_URL`) and `--key-env VAR`. `node connectors/agent.mjs` is an experimental local helper that holds a WebSocket per session instead of long polling; it is not needed.
 
-Checks before a release: `claude plugin validate . --strict`, `claude plugin test .` and `tsc -p . --noEmit`.
+Checks before a release: `claude plugin validate . --strict`, `claude plugin test .`, `tsc -p . --noEmit` and `node scripts/sync-vectors.mjs --check`. The shared test vectors of the Talkif Agent Protocol are in `test-vectors/` (`scripts/make-vectors.mjs` makes `tap1.json` with Node's own crypto; the tests compare the plugin's implementation with it).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Releases up to 0.25.2 were published under the MIT License.

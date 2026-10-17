@@ -14,7 +14,7 @@ const PATTERNS: readonly RegExp[] = [
   /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
-  /\btif_(?:live|test)_[A-Za-z0-9]{8,}/g,
+  /\btif_(?:live|test|agent)_[A-Za-z0-9]{8,}/g,
 ]
 // NAME=value where the name says key, token, secret or password: the name stays.
 const ASSIGNMENT = /\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD))\s*=\s*(?:"[^"]*"|'[^']*'|\S+)/gi

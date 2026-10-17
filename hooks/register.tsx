@@ -2,6 +2,19 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface, Timer, ToolCallInput } from 'claude-code'
 
 import type { TrafficEntry } from '../types'
+import {
+  agentSections,
+  agentSessionStart,
+  agentToolDenial,
+  agentToolDenialFallback,
+  agentTurnComplete,
+  agentTurnStart,
+  inPeerTask,
+  peerSpawnSettled,
+  peerSpawnStarted,
+  personalAgentStatus,
+  registerPersonalAgent,
+} from './agent'
 import { CallTaskScope, readOnlyDenial } from './read-only'
 import { redactBody } from './secrets'
 import { fenceUntrusted, untrustedNote } from './untrusted'
@@ -41,7 +54,7 @@ import type { CallMeState, Check, Credentials, FlowRef, Problem } from './config
 const TOOL = 'call_me'
 // Sent as the User-Agent on every request to the backend and the bridge. Kept equal
 // to .claude-plugin/plugin.json's version: bump both together.
-export const VERSION = '0.25.2'
+export const VERSION = '0.26.0'
 const USER_AGENT = `talkif-call-me/${VERSION}`
 // Debug pane: this session's bridge traffic, newest last (`/cm traffic`; recorded only with the debug option).
 const TRAFFIC_PANE = 'call-me-traffic'
@@ -1151,6 +1164,7 @@ async function bridgePoll($: EngineInterface, bridge: Bridge) {
           question: typeof body.question === 'string' ? body.question : undefined,
           intent: typeof body.intent === 'string' ? body.intent : undefined,
           notify: typeof body.notify === 'string' ? body.notify : undefined,
+          callerName: typeof body.callerName === 'string' ? body.callerName : undefined,
         }).catch(err => $.ui.log(`call-me bridge (${bridge.name}): answering failed: ${String(err)}`))
       }
     } else if (res.status !== 204) {
@@ -1250,11 +1264,13 @@ async function currentState($: EngineInterface): Promise<CallMeState> {
     // Two failed polls in a row: retrying, shown as connecting until a poll goes through.
     registered: bridges.filter(b => b.session && b.failures < 2).map(b => b.accountName),
     flowName: flow?.name,
+    // Personal Agent's part of the status line (absent without an agent credential).
+    agent: personalAgentStatus(),
   }
 }
 
 let shownStatus: string | undefined
-async function refreshStatus($: EngineInterface): Promise<void> {
+export async function refreshStatus($: EngineInterface): Promise<void> {
   try {
     const text = statusText(await currentState($))
     if (text === shownStatus) return
@@ -1279,7 +1295,9 @@ export const register: Register = (on, options) => {
   // Recent call summaries reach this session's prompt as one section.
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
-    if (callNotes.length === 0) return result
+    // Personal Agent's sections (none without an agent credential).
+    const agent = agentSections()
+    if (callNotes.length === 0) return agent.length ? { sections: [...result.sections, ...agent] } : result
     const text = [
       untrustedNote(
         'call-notes',
@@ -1287,7 +1305,7 @@ export const register: Register = (on, options) => {
       ),
       fenceUntrusted('call-notes', callNotes.map(n => `- ${n.at}: ${n.text}`).join('\n')),
     ].join('\n')
-    return { sections: [...result.sections, { id: 'call-me:calls', text, scope: 'session' }] }
+    return { sections: [...result.sections, { id: 'call-me:calls', text, scope: 'session' }, ...agent] }
   })
 
   // A task from a call runs read-only (callTasks option): anything that changes
@@ -1308,39 +1326,49 @@ export const register: Register = (on, options) => {
   // its tool calls stay guarded whenever they come.
   on('agent.spawn', async ($, e, next) => {
     const covered = callTasks === 'read-only' && scope.spawnStarted(e.parentAgentId)
+    // A task from another connected agent covers the subagents it starts the same way.
+    const peerCovered = peerSpawnStarted(e.parentAgentId)
     let agentId: string | undefined
     try {
-      if (!covered) {
+      if (!covered && !peerCovered) {
         const result = await next(e)
         agentId = result.agentId
         return result
       }
-      if (e.isTeammate || e.workflow) return { deny: 'This task came from a phone call and runs read-only: no teammates or workflows.' }
+      if (e.isTeammate || e.workflow) {
+        return { deny: covered ? 'This task came from a phone call and runs read-only: no teammates or workflows.' : 'This task came from another connected agent: no teammates or workflows.' }
+      }
       // A resumed run's content keys are fixed; its id is already remembered.
       const result = await next(e.resume ? e : { ...e, background: false })
       agentId = result.agentId
       return result
     } finally {
       scope.spawnSettled(covered, agentId)
+      peerSpawnSettled(peerCovered, agentId)
     }
   }).catch(($, e, next) => {
     // Failed before the spawn: outside a call task it goes ahead; inside one it does not start unguarded.
     if (next.called) return next(e)
+    if (inPeerTask(e.parentAgentId)) return { deny: 'call-me: the guard for tasks from other agents failed; the agent was not started.' }
     return inCallTask(e.parentAgentId) ? { deny: 'call-me: the read-only guard for call tasks failed; the agent was not started.' } : next(e)
   })
-  on('tool.call', ($, e, next) => {
+  on('tool.call', async ($, e, next) => {
     const denial = callTaskDenial(e)
-    if (!denial) return next(e)
-    void trace($, 'info', 'task', 'read-only', `refused ${e.tool}`)
-    return { deny: denial }
+    if (denial) {
+      void trace($, 'info', 'task', 'read-only', `refused ${e.tool}`)
+      return { deny: denial }
+    }
+    // A task from another connected agent (Personal Agent): refused or held for approval here.
+    const peer = await agentToolDenial($, e)
+    return peer ? { deny: peer } : next(e)
   }).catch(($, e, next) => {
-    // A re-entry (another hook's tool call beneath) is judged from e alone; a failure refuses only during a call task.
+    // A re-entry (another hook's tool call beneath) is judged from e alone; a failure refuses only during a call or peer task.
     if (next.called) return next(e)
-    if (next.error.kind === 're-entry' || !inCallTask(e.agentId)) {
-      const denial = callTaskDenial(e)
+    if (next.error.kind === 're-entry' || (!inCallTask(e.agentId) && !inPeerTask(e.agentId))) {
+      const denial = callTaskDenial(e) ?? agentToolDenialFallback(e)
       return denial ? { deny: denial } : next(e)
     }
-    return { deny: 'call-me: the read-only guard for call tasks failed; the tool was not run.' }
+    return { deny: inCallTask(e.agentId) ? 'call-me: the read-only guard for call tasks failed; the tool was not run.' : 'call-me: the guard for tasks from other agents failed; the tool was not run.' }
   })
 
   // Permissions stay Claude Code's own (settings rules, modes): this plugin never
@@ -1367,6 +1395,8 @@ export const register: Register = (on, options) => {
   })
 
   on('session.start', async ($, e, next) => {
+    // Personal Agent first: its own folder binding decides, not the folders option (off without an agent credential).
+    await agentSessionStart($, e.cwd)
     // The folders option limits which sessions join (empty: every session).
     const { home } = await homeOf($)
     if (!folderAllowed(e.cwd, parseFolders(optFolders, home))) return next(e)
@@ -1506,11 +1536,13 @@ export const register: Register = (on, options) => {
     if (!e.agentId && mark) scope.startTurn(e.turnId)
     else if (!e.agentId && e.text.trim()) scope.endTurn()
     if (!e.agentId) await refreshStatus($)
+    await agentTurnStart($, e)
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    await agentTurnComplete($, e)
     if (e.agentId) return result // a subagent's run, not this session's turn
     scope.endTurn(e.turnId)
     const work = [...callWork.values()].find(w => w.turnId === e.turnId)
@@ -1532,4 +1564,7 @@ export const register: Register = (on, options) => {
     }
     return result
   })
+
+  // Personal Agent: this session as one of the person's connected agents (only with an agent credential).
+  registerPersonalAgent(on, options)
 }
