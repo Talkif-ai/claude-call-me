@@ -1,0 +1,127 @@
+{
+  "v": 1,
+  "rule": "hidden := Unicode Cc, Cf, Zl, Zp, and every Zs other than U+0020. Shown: each UTF-16 code unit of a hidden character as \\uXXXX (capital hex); tool, input (canonicalJson) and cwd each on their own. Any hidden character: approve is not offered (deny only); the hub refuses one in tool or cwd at POST /approvals with refusal hidden_characters.",
+  "refusal": "hidden_characters",
+  "cases": [
+    {
+      "name": "bidi override and zero-width space in the input",
+      "tool": "Bash",
+      "input": {
+        "command": "echo \u202eabc\u200b"
+      },
+      "cwd": "/repo",
+      "canonicalInput": "{\"command\":\"echo \u202eabc\u200b\"}",
+      "shown": {
+        "tool": "Bash",
+        "input": "{\"command\":\"echo \\u202Eabc\\u200B\"}",
+        "cwd": "/repo"
+      },
+      "hidden": true
+    },
+    {
+      "name": "right-to-left isolate hiding the end of a command",
+      "tool": "Bash",
+      "input": {
+        "command": "rm -rf build \u2067# tests\u2069"
+      },
+      "cwd": "/repo",
+      "canonicalInput": "{\"command\":\"rm -rf build \u2067# tests\u2069\"}",
+      "shown": {
+        "tool": "Bash",
+        "input": "{\"command\":\"rm -rf build \\u2067# tests\\u2069\"}",
+        "cwd": "/repo"
+      },
+      "hidden": true
+    },
+    {
+      "name": "zero-width joiner in the tool name",
+      "tool": "Bash\u200d",
+      "input": {
+        "command": "ls"
+      },
+      "cwd": "/repo",
+      "canonicalInput": "{\"command\":\"ls\"}",
+      "shown": {
+        "tool": "Bash\\u200D",
+        "input": "{\"command\":\"ls\"}",
+        "cwd": "/repo"
+      },
+      "hidden": true
+    },
+    {
+      "name": "no-break space in the folder",
+      "tool": "Bash",
+      "input": {
+        "command": "ls"
+      },
+      "cwd": "/repo\u00a0x",
+      "canonicalInput": "{\"command\":\"ls\"}",
+      "shown": {
+        "tool": "Bash",
+        "input": "{\"command\":\"ls\"}",
+        "cwd": "/repo\\u00A0x"
+      },
+      "hidden": true
+    },
+    {
+      "name": "tag character (astral, two UTF-16 units)",
+      "tool": "Bash",
+      "input": {
+        "command": "echo \udb40\udc41"
+      },
+      "cwd": "/repo",
+      "canonicalInput": "{\"command\":\"echo \udb40\udc41\"}",
+      "shown": {
+        "tool": "Bash",
+        "input": "{\"command\":\"echo \\uDB40\\uDC41\"}",
+        "cwd": "/repo"
+      },
+      "hidden": true
+    },
+    {
+      "name": "C1 control and line separator",
+      "tool": "Bash",
+      "input": {
+        "command": "a\u0085b\u2028c"
+      },
+      "cwd": "/repo",
+      "canonicalInput": "{\"command\":\"a\u0085b\u2028c\"}",
+      "shown": {
+        "tool": "Bash",
+        "input": "{\"command\":\"a\\u0085b\\u2028c\"}",
+        "cwd": "/repo"
+      },
+      "hidden": true
+    },
+    {
+      "name": "a tab is escaped by canonicalJson already: visible, not hidden",
+      "tool": "Bash",
+      "input": {
+        "command": "printf \"a\tb\""
+      },
+      "cwd": "/repo",
+      "canonicalInput": "{\"command\":\"printf \\\"a\\tb\\\"\"}",
+      "shown": {
+        "tool": "Bash",
+        "input": "{\"command\":\"printf \\\"a\\tb\\\"\"}",
+        "cwd": "/repo"
+      },
+      "hidden": false
+    },
+    {
+      "name": "plain",
+      "tool": "Bash",
+      "input": {
+        "command": "git status"
+      },
+      "cwd": "/repo",
+      "canonicalInput": "{\"command\":\"git status\"}",
+      "shown": {
+        "tool": "Bash",
+        "input": "{\"command\":\"git status\"}",
+        "cwd": "/repo"
+      },
+      "hidden": false
+    }
+  ]
+}

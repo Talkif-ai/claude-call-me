@@ -34,7 +34,7 @@ export const REFUSALS = [
   'already_bid', 'another_approval_announced', 'approval_denied', 'approval_expired', 'approval_mismatch', 'approval_required', 'approval_used',
   'bad_ciphertext', 'bid_round_closed', 'body_too_large', 'budget_exhausted', 'caller_did_not_answer', 'canceled', 'cannot_revoke_phone',
   'card_not_set', 'credential_already_issued', 'credential_revoked', 'cycle', 'deadline_passed', 'depth_limit', 'envelope_too_large', 'expired',
-  'file_unavailable', 'guard_unavailable', 'idempotency_conflict', 'inbox_full', 'invalid_envelope', 'invalid_kind', 'invalid_transition',
+  'file_unavailable', 'guard_unavailable', 'hidden_characters', 'idempotency_conflict', 'inbox_full', 'invalid_envelope', 'invalid_kind', 'invalid_transition',
   'key_already_set', 'key_not_set', 'live_agents_limit', 'may_not_delegate', 'mode_forbids_write', 'no_bidder', 'no_capable_agent',
   'no_personal_account', 'not_announced_here', 'not_enabled', 'not_owner_call', 'not_personal_call', 'not_task_party', 'open_tasks_limit',
   'owner_proof_required', 'paused', 'rate_limited', 'receiver_mismatch', 'relay_not_allowed', 'request_closed', 'sender_may_not_assign_writes',
@@ -45,6 +45,8 @@ export type Refusal = (typeof REFUSALS)[number]
 export const CLIENT_KINDS = ['message', 'task', 'status', 'result'] as const
 export const HUB_KINDS = ['bid_request', 'bid_outcome', 'file_request', 'approval_update', 'task_canceled'] as const
 export const KINDS = [...CLIENT_KINDS, ...HUB_KINDS] as const
+/** What the hub itself may send with no body: its own kinds, and `status` reflecting a task transition it made (failed, rejected, expired, canceled). */
+export const HUB_SENDABLE = [...HUB_KINDS, 'status'] as const
 export type ClientKind = (typeof CLIENT_KINDS)[number]
 export type HubKind = (typeof HUB_KINDS)[number]
 export type Kind = ClientKind | HubKind
@@ -65,6 +67,13 @@ export function refusalOf(text: string): Refusal | undefined {
   return typeof code === 'string' && (REFUSALS as readonly string[]).includes(code) ? (code as Refusal) : undefined
 }
 
+// ---- ids from the hub ----
+
+/** An agent, task, request or message id: a lowercase UUID. Anything else from the hub is refused (it names files and keychain entries here). */
+export const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+export const isId = (v: unknown): v is string => typeof v === 'string' && AGENT_ID.test(v)
+const optId = (v: unknown): string | undefined | false => (v === undefined || v === null ? undefined : isId(v) ? v : false)
+
 // ---- names from the hub, as safe to show ----
 
 /** A name, machine or project from the hub: the hub's charset only, one short line. */
@@ -83,7 +92,7 @@ export type SelfInfo = { agentId: string; keySet: boolean; receiver: string | un
 const isMode = (v: unknown): v is HubMode => v === 'read_only' || v === 'auto' || v === 'ask_everything'
 
 export function parseSelf(body: unknown): SelfInfo | undefined {
-  if (!isRecord(body) || typeof body.agentId !== 'string' || typeof body.keySet !== 'boolean') return undefined
+  if (!isRecord(body) || !isId(body.agentId) || typeof body.keySet !== 'boolean') return undefined
   const card = isRecord(body.card) ? body.card : {}
   return {
     agentId: body.agentId,
@@ -107,7 +116,7 @@ const key32 = (v: unknown): Uint8Array | undefined => {
 export function parsePeers(body: unknown): Peer[] {
   if (!isRecord(body) || !Array.isArray(body.peers)) return []
   return body.peers.flatMap(p =>
-    isRecord(p) && typeof p.agentId === 'string'
+    isRecord(p) && isId(p.agentId)
       ? [{
           agentId: p.agentId,
           kind: displayName(p.kind, 16),
@@ -143,19 +152,21 @@ export const OPEN_STATES: readonly TaskState[] = ['submitted', 'needs_approval',
 
 export function parseTask(body: unknown): TaskInfo | undefined {
   const t = isRecord(body) && isRecord(body.task) ? body.task : body
-  if (!isRecord(t) || typeof t.taskId !== 'string' || typeof t.requestId !== 'string' || typeof t.fromAgentId !== 'string') return undefined
+  if (!isRecord(t) || !isId(t.taskId) || !isId(t.requestId) || !isId(t.fromAgentId)) return undefined
   const state = TASK_STATES.find(s => s === t.state)
-  if (!state) return undefined
+  const parentTaskId = optId(t.parentTaskId)
+  const toAgentId = optId(t.toAgentId)
+  if (!state || parentTaskId === false || toAgentId === false) return undefined
   // `granted` beside the task (GET /tasks/{id}) or on it; anything but local_write is read.
   const granted = (isRecord(body) && body.granted === 'local_write') || t.granted === 'local_write' ? 'local_write' : 'read'
   return {
     taskId: t.taskId,
     requestId: t.requestId,
-    parentTaskId: optString(t.parentTaskId),
+    parentTaskId,
     depth: typeof t.depth === 'number' ? t.depth : 1,
     fromAgentId: t.fromAgentId,
     fromAgentName: displayName(t.fromAgentName),
-    toAgentId: optString(t.toAgentId),
+    toAgentId,
     state,
     permission: t.permission === 'local_write' ? 'local_write' : 'read',
     granted,
@@ -185,9 +196,11 @@ export type Envelope = {
 }
 
 function parseEnvelope(v: unknown): Envelope | undefined {
-  if (!isRecord(v) || v.v !== 1 || typeof v.messageId !== 'string' || typeof v.from !== 'string') return undefined
+  // `from` is a sender's agent id, or "hub" on an item the hub made itself.
+  if (!isRecord(v) || v.v !== 1 || !isId(v.messageId) || !(isId(v.from) || v.from === 'hub')) return undefined
   if (!isClientKind(v.kind) && !isHubKind(v.kind)) return undefined
   const to = isRecord(v.to) ? v.to : {}
+  for (const id of [v.requestId, v.taskId, v.parentTaskId]) if (optId(id) === false) return undefined
   const nullable = (x: unknown): string | null => (typeof x === 'string' ? x : null)
   return {
     v: 1,
@@ -234,7 +247,7 @@ export type A2AMessage = {
 }
 
 export type Accepted =
-  | { type: 'hub'; kind: HubKind; envelope: Envelope; hub: Record<string, unknown> }
+  | { type: 'hub'; kind: HubKind | 'status'; envelope: Envelope; hub: Record<string, unknown> }
   | { type: 'body'; envelope: Envelope; text: string; data: Record<string, unknown>[]; code: Record<string, string> | undefined }
   | { type: 'unknown-peer'; from: string }
   | { type: 'drop'; reason: string }
@@ -245,16 +258,23 @@ export type Accepted =
  * key, it opens with our key under the envelope's AAD, and the ids inside match
  * the envelope's. Everything else is dropped (never shown to the model).
  */
-export function acceptItem(item: InboxItem, selfId: string, selfKeys: KeyPair, pins: Readonly<Record<string, PeerPin>>): Accepted {
+export function acceptItem(item: InboxItem, selfId: string, selfKeys: KeyPair, pins: Readonly<Record<string, PeerPin>>, now = Date.now()): Accepted {
   const envelope = parseEnvelope(item.raw)
   if (!envelope) return { type: 'drop', reason: 'malformed envelope' }
   if (item.body === null) {
-    if (!isHubKind(envelope.kind)) return { type: 'drop', reason: 'no body on a client kind' }
-    return { type: 'hub', kind: envelope.kind, envelope, hub: envelope.hub ?? {} }
+    // A hub item: a hub kind, or `status` the hub sends for a transition it made. Only a hint: nothing runs on it.
+    if (envelope.from !== 'hub') return { type: 'drop', reason: 'no body on a client kind' }
+    if (isHubKind(envelope.kind)) return { type: 'hub', kind: envelope.kind, envelope, hub: envelope.hub ?? {} }
+    if (envelope.kind === 'status') return { type: 'hub', kind: 'status', envelope, hub: envelope.hub ?? {} }
+    return { type: 'drop', reason: 'no body on a client kind' }
   }
   if (!isClientKind(envelope.kind)) return { type: 'drop', reason: 'a body on a hub kind' }
   if (envelope.hub !== null) return { type: 'drop', reason: 'hub data on a body item' }
-  const pin = pins[envelope.from]
+  if (envelope.from === 'hub') return { type: 'drop', reason: 'a body from the hub' }
+  // An old body redelivered after its deadline is never acted on (a restart forgets what was seen).
+  const deadline = Date.parse(envelope.deadlineAt)
+  if (!Number.isFinite(deadline) || deadline < now) return { type: 'drop', reason: 'past its deadline' }
+  const pin = Object.hasOwn(pins, envelope.from) ? pins[envelope.from] : undefined
   if (!pin) return { type: 'unknown-peer', from: envelope.from }
   const signPublic = fromB64url(pin.signPublic)
   if (!signPublic || !item.sig) return { type: 'drop', reason: 'unsigned' }
@@ -504,4 +524,22 @@ export function pinVerdict(pin: PeerPin | undefined, peer: Peer): 'same' | 'new'
 export function canonicalActionInput(input: unknown): string | undefined {
   const text = canonicalJson(input ?? {})
   return canonicalJson(redactBody(input ?? {})) === text ? text : undefined
+}
+
+// ---- hidden characters in what the person approves (§6.3) ----
+
+// Controls, format characters (bidi overrides and isolates, zero-width, tags), line
+// and paragraph separators, and every space but the plain one: what makes text read
+// as something it is not.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}]/gu
+
+/** `text` with every hidden character shown as `\uXXXX` (one per UTF-16 unit), and whether it had any. */
+export function revealHidden(text: string): { shown: string; hidden: boolean } {
+  let hidden = false
+  const shown = text.replace(HIDDEN, ch => {
+    if (ch === ' ') return ch
+    hidden = true
+    return Array.from({ length: ch.length }, (_, i) => `\\u${ch.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0')}`).join('')
+  })
+  return { shown, hidden }
 }

@@ -1,11 +1,28 @@
-[
-  "message",
-  "task",
-  "status",
-  "result",
-  "bid_request",
-  "bid_outcome",
-  "file_request",
-  "approval_update",
-  "task_canceled"
-]
+{
+  "agent": [
+    {
+      "kind": "message",
+      "route": "POST /messages"
+    },
+    {
+      "kind": "task",
+      "route": "POST /tasks"
+    },
+    {
+      "kind": "status",
+      "route": "POST /tasks/{taskId}/status"
+    },
+    {
+      "kind": "result",
+      "route": "POST /tasks/{taskId}/status"
+    }
+  ],
+  "hub": [
+    "bid_request",
+    "bid_outcome",
+    "file_request",
+    "approval_update",
+    "task_canceled",
+    "status"
+  ]
+}

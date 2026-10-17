@@ -6,34 +6,46 @@ import { VECTOR_FILES } from './vectors'
 import { OWNER_APPROVAL_ID, OWNER_FIXTURES } from './owner-fixtures'
 import * as T from '../hooks/tap1'
 import {
+  CLIENT_KINDS,
+  HUB_SENDABLE,
   KINDS,
   REFUSALS,
   acceptItem,
   agentStatusText,
+  approvalChallenge,
   agentsContextLine,
   displayName,
   effectiveMode,
   ownerFingerprint,
   parseOwnerKeys,
+  revealHidden,
   sealMessage,
   verifyOwnerProof,
 } from '../hooks/protocol'
 import type { InboxItem, Peer, PeerPin } from '../hooks/protocol'
-import { classify } from '../hooks/tiers'
+import { classify, shellCwdsAfter } from '../hooks/tiers'
+import { findPeer } from '../hooks/agent'
 import { redactSecrets } from '../hooks/secrets'
 import { fenceUntrusted } from '../hooks/untrusted'
 import { readOnlyDenial } from '../hooks/read-only'
-import { NO_KEY_PROBLEM, TALKIF_OWNER_ORIGIN, refusalReason, resolveAgentCredentials, statusText } from '../hooks/config'
+import { NO_KEY_PROBLEM, TALKIF_OWNER_ORIGIN, agentRefusalReason, refusalReason, resolveAgentCredentials, statusText } from '../hooks/config'
 import type { CallMeState } from '../hooks/config'
 
 type Json = Record<string, unknown>
 const vectorFile = (name: string): unknown => JSON.parse(VECTOR_FILES[name] ?? 'null')
+// tap1.json, kinds.json and refusals.json: byte for byte the files the talkif-agents repository generates.
+type Ct = { v: 1; alg: string; epk: string; nonce: string; ct: string }
 const V = vectorFile('tap1.json') as Json & {
-  inputs: Json & { envelope: Json; recipientPrivate: string; recipientPublic: string; ephemeralPrivate: string; signingPrivate: string; signingPublic: string; nonce: string; plaintext: string; messageId: string; recipient: string }
-  ciphertext: Json
-  chunks: { ticketId: string; totalBytes: number; items: Array<{ seq: number; last: boolean; ct: string; plaintext: string }> }
-  session: { sid: string; sealedNonce: Json; proof: string; nonce: string }
-  action: { agentId: string; taskId: string; tool: string; input: unknown; cwd: string; actionHash: string }
+  inputs: Json & { envelope: Json; recipientPrivate: string; recipientPublic: string; ephemeralPrivate: string; signingSecret: string; signingPublic: string; nonce: string; plaintext: string; messageId: string; recipient: string; expectedShared: string }
+  ciphertext: Ct
+  tamperFields: string[]
+  chunks: { ticketId: string; consumer: string; totalBytes: number; items: Array<{ seq: number; last: boolean; aad: string; sigInput: string; ct: Ct; sig: string; plaintext: string }> }
+  session: { sid: string; agentId: string; aad: string; sealedNonce: Ct; proof: string; nonce: string }
+  action: { agentId: string; taskId: string; tool: string; input: unknown; cwd: string; preimage: string; actionHash: string }
+  approval: { approvalId: string; actionHash: string; challenge: string }
+  keyFingerprint: { publicKey: string; signingKey: string; fingerprint: string }
+  ownerKey: { alg: number; cose: string; fingerprint: string }
+  lowOrder: { recipientPublic: string; mustRefuse: boolean }
 }
 const hex = (h: string): Uint8Array => {
   const b = T.fromHex(h)
@@ -47,20 +59,24 @@ test('tap1: canonical envelope, envHash, shared secret, key, ciphertext and sign
   const env = V.inputs.envelope
   expect(T.canonicalJson(Object.fromEntries(Object.entries(env).filter(([k]) => k !== 'hub')))).toBe(String(V.canonicalEnvelope))
   expect(T.envelopeHash(env)).toBe(String(V.envHash))
-  expect(T.toHex(T.sharedSecret(hex(V.inputs.ephemeralPrivate), hex(V.inputs.recipientPublic)) ?? new Uint8Array())).toBe('4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742')
+  expect(T.toHex(T.sharedSecret(hex(V.inputs.ephemeralPrivate), hex(V.inputs.recipientPublic)) ?? new Uint8Array())).toBe(V.inputs.expectedShared)
   expect(String(V.aad)).toBe(T.bodyAad(String(V.envHash), V.inputs.recipient))
   const sealed = T.seal(T.utf8(V.inputs.plaintext), hex(V.inputs.recipientPublic), V.inputs.messageId, String(V.aad), { ephemeralPrivate: hex(V.inputs.ephemeralPrivate), nonce: hex(V.inputs.nonce) })
   expect(sealed?.ciphertext).toEqual(V.ciphertext)
-  expect(T.signText(T.bodySigText(String(V.envHash), V.inputs.recipient, sealed?.ct ?? new Uint8Array()), hex(V.inputs.signingPrivate))).toBe(String(V.sig))
+  const ct = sealed?.ct ?? new Uint8Array()
+  expect(T.bodySigText(String(V.envHash), V.inputs.recipient, ct)).toBe(String(V.sigInput))
+  expect(T.signText(String(V.sigInput), hex(V.inputs.signingSecret))).toBe(String(V.sig))
   expect(T.fromUtf8(T.open(V.ciphertext, hex(V.inputs.recipientPrivate), V.inputs.messageId, String(V.aad)) ?? new Uint8Array())).toBe(V.inputs.plaintext)
 })
 
 test('tap1: any changed envelope field, AAD byte or ciphertext byte fails to open; a signature over another envHash fails', async () => {
   const priv = hex(V.inputs.recipientPrivate)
   const env = V.inputs.envelope
-  const changes: Record<string, unknown> = { kind: 'message', taskId: '0192f000-0000-7000-8000-0000000000ff', requestId: null, parentTaskId: null, permission: 'read', depth: 3, deadlineAt: '2026-10-18T12:00:00Z', topics: ['ios'], sizeBytes: 1, from: 'x' }
-  for (const [field, value] of Object.entries(changes)) {
-    const changed = T.bodyAad(T.envelopeHash({ ...env, [field]: value }), V.inputs.recipient)
+  const changes: Record<string, unknown> = { kind: 'message', taskId: '0192f000-0000-7000-8000-0000000000ff', requestId: null, parentTaskId: null, permission: 'read', depth: 3, deadlineAt: '2026-10-18T12:00:00Z', topics: ['ios'], sizeBytes: 1, from: 'x', to: { agents: [] } }
+  // Every field the vector says must be bound is in this list.
+  expect(V.tamperFields.filter(f => !(f in changes))).toEqual([])
+  for (const field of V.tamperFields) {
+    const changed = T.bodyAad(T.envelopeHash({ ...env, [field]: changes[field] }), V.inputs.recipient)
     expect(T.open(V.ciphertext, priv, V.inputs.messageId, changed)).toBe(undefined)
   }
   // The hub key is outside the hash: the hub may set it.
@@ -77,28 +93,46 @@ test('tap1: any changed envelope field, AAD byte or ciphertext byte fails to ope
   expect(T.verifyText(T.bodySigText(String(V.envHash), V.inputs.recipient, flipped), String(V.sig), signPub)).toBe(false)
 })
 
-test('tap1: chunks open only with their own last flag and size; a low-order public key is refused', async () => {
+test('tap1: chunks open only with their own last flag and size and verify their signature; a low-order public key is refused', async () => {
   const priv = hex(V.inputs.recipientPrivate)
+  const signPub = hex(V.inputs.signingPublic)
   for (const c of V.chunks.items) {
     const id = `${V.chunks.ticketId}:${c.seq}`
-    const ct = { ...V.ciphertext, ct: c.ct }
-    const ok = T.open(ct, priv, id, T.chunkAad(V.chunks.ticketId, c.seq, c.last, V.chunks.totalBytes, V.inputs.recipient))
+    const aad = T.chunkAad(V.chunks.ticketId, c.seq, c.last, V.chunks.totalBytes, V.chunks.consumer)
+    expect(aad).toBe(c.aad)
+    const ok = T.open(c.ct, priv, id, aad)
     expect(T.b64url(ok ?? new Uint8Array())).toBe(c.plaintext)
-    expect(T.open(ct, priv, id, T.chunkAad(V.chunks.ticketId, c.seq, !c.last, V.chunks.totalBytes, V.inputs.recipient))).toBe(undefined)
-    expect(T.open(ct, priv, id, T.chunkAad(V.chunks.ticketId, c.seq, c.last, V.chunks.totalBytes + 1, V.inputs.recipient))).toBe(undefined)
+    expect(T.open(c.ct, priv, id, T.chunkAad(V.chunks.ticketId, c.seq, !c.last, V.chunks.totalBytes, V.chunks.consumer))).toBe(undefined)
+    expect(T.open(c.ct, priv, id, T.chunkAad(V.chunks.ticketId, c.seq, c.last, V.chunks.totalBytes + 1, V.chunks.consumer))).toBe(undefined)
+    const ctBytes = T.fromB64url(c.ct.ct) ?? new Uint8Array()
+    expect(T.chunkSigText(aad, ctBytes)).toBe(c.sigInput)
+    expect(T.verifyText(c.sigInput, c.sig, signPub)).toBe(true)
   }
-  expect(T.sharedSecret(hex(V.inputs.ephemeralPrivate), new Uint8Array(32))).toBe(undefined)
-  expect(T.seal(T.utf8('x'), new Uint8Array(32), 'm', 'aad')).toBe(undefined)
+  expect(V.lowOrder.mustRefuse).toBe(true)
+  expect(T.sharedSecret(hex(V.inputs.ephemeralPrivate), hex(V.lowOrder.recipientPublic))).toBe(undefined)
+  expect(T.seal(T.utf8('x'), hex(V.lowOrder.recipientPublic), 'm', 'aad')).toBe(undefined)
 })
 
-test('tap1: the session nonce opens with the agent key and gives the vector proof; the action hash matches', async () => {
-  const nonce = T.open(V.session.sealedNonce, hex(V.inputs.recipientPrivate), V.session.sid, T.sessionAad(V.session.sid, V.inputs.recipient))
+test('tap1: the session nonce opens with the agent key and gives the vector proof; the action hash and the approval challenge match', async () => {
+  expect(T.sessionAad(V.session.sid, V.session.agentId)).toBe(V.session.aad)
+  const nonce = T.open(V.session.sealedNonce, hex(V.inputs.recipientPrivate), V.session.sid, V.session.aad)
   expect(T.toHex(nonce ?? new Uint8Array())).toBe(V.session.nonce)
   expect(T.sessionProof(nonce ?? new Uint8Array(), V.session.sid)).toBe(V.session.proof)
   // Sealed to another agent id: does not open.
   expect(T.open(V.session.sealedNonce, hex(V.inputs.recipientPrivate), V.session.sid, T.sessionAad(V.session.sid, 'someone-else'))).toBe(undefined)
+  expect(T.actionPreimage(V.action)).toBe(V.action.preimage)
   expect(T.actionHash(V.action)).toBe(V.action.actionHash)
   expect(T.actionHash({ ...V.action, input: { command: 'git push origin main --force' } })).not.toBe(V.action.actionHash)
+  expect(approvalChallenge(V.approval.approvalId, V.approval.actionHash)).toBe(V.approval.challenge)
+})
+
+test('tap1: the agent key fingerprint and the passkey fingerprint are the ones the dashboard shows', async () => {
+  const box = T.fromB64url(V.keyFingerprint.publicKey) ?? new Uint8Array()
+  const sign = T.fromB64url(V.keyFingerprint.signingKey) ?? new Uint8Array()
+  expect(T.agentFingerprint(box, sign)).toBe(V.keyFingerprint.fingerprint)
+  const cose = T.fromB64url(V.ownerKey.cose) ?? new Uint8Array()
+  expect(ownerFingerprint(cose)).toBe(V.ownerKey.fingerprint)
+  expect(parseOwnerKeys({ keys: [{ credentialId: 'c', publicKey: V.ownerKey.cose }] })[0]?.fingerprint).toBe(V.ownerKey.fingerprint)
 })
 
 test('tap1: base64url and keys round-trip; a non-canonical base64url spelling is refused', async () => {
@@ -116,9 +150,30 @@ test('tap1: base64url and keys round-trip; a non-canonical base64url spelling is
   expect(T.uuidv7()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 })
 
+// Codes this plugin already knows that the shared list does not have yet (added to
+// the talkif-agents generator next); once it has them, the union is the same list.
+const PENDING_UPSTREAM_REFUSALS = ['hidden_characters']
+
 test('closed lists equal the shared refusals.json and kinds.json', async () => {
-  expect([...REFUSALS].sort()).toEqual(vectorFile('refusals.json'))
-  expect([...KINDS]).toEqual(vectorFile('kinds.json'))
+  const shared = (vectorFile('refusals.json') as { refusals: string[] }).refusals
+  expect([...REFUSALS].sort()).toEqual([...new Set([...shared, ...PENDING_UPSTREAM_REFUSALS])].sort())
+  const kinds = vectorFile('kinds.json') as { agent: Array<{ kind: string }>; hub: string[] }
+  expect(kinds.agent.map(k => k.kind)).toEqual([...CLIENT_KINDS])
+  expect([...kinds.hub].sort()).toEqual([...HUB_SENDABLE].sort())
+  expect([...KINDS].sort()).toEqual([...new Set([...kinds.agent.map(k => k.kind), ...kinds.hub])].sort())
+})
+
+test('hidden characters: shown as \\uXXXX exactly as hidden.json says, and flagged', async () => {
+  const v = vectorFile('hidden.json') as { refusal: string; cases: Array<{ name: string; tool: string; input: unknown; cwd: string; canonicalInput: string; shown: { tool: string; input: string; cwd: string }; hidden: boolean }> }
+  expect(REFUSALS).toContain(v.refusal)
+  expect(v.cases.length >= 6).toBe(true)
+  for (const c of v.cases) {
+    expect(T.canonicalJson(c.input)).toBe(c.canonicalInput)
+    const tool = revealHidden(c.tool)
+    const input = revealHidden(c.canonicalInput)
+    const cwd = revealHidden(c.cwd)
+    expect(`${c.name}: ${tool.shown} ${input.shown} ${cwd.shown} ${tool.hidden || input.hidden || cwd.hidden}`).toBe(`${c.name}: ${c.shown.tool} ${c.shown.input} ${c.shown.cwd} ${c.hidden}`)
+  }
 })
 
 test('tiers: every shared case in tiers.json', async () => {
@@ -131,10 +186,14 @@ test('tiers: every shared case in tiers.json', async () => {
 
 test('secrets: tif_agent_ credentials are redacted; a sealed body is scrubbed before it is sealed', async () => {
   expect(redactSecrets('use tif_agent_abcdefghijklmnop now')).toBe('use [redacted] now')
+  // A connected agent's private key file (Linux) is a 128-hex blob: never sealed to a peer.
+  const blob = T.keyBlob(T.generateKeyPair())
+  expect(redactSecrets(`found ${blob}\n`)).toBe('found [redacted]\n')
+  expect(redactSecrets('commit 3f2a9c1e0b')).toBe('commit 3f2a9c1e0b')
   const recipient = T.generateKeyPair()
   const sender = T.generateKeyPair()
   const sealed = sealMessage(
-    { kind: 'message', from: 'me', to: { agents: ['you'] }, topics: [], requestId: null, taskId: null, parentTaskId: null, depth: 0, deadlineAt: '2026-10-18T00:00:00Z', permission: 'read', notify: 'none' },
+    { kind: 'message', from: 'me', to: { agents: ['you'] }, topics: [], requestId: null, taskId: null, parentTaskId: null, depth: 0, deadlineAt: FAR, permission: 'read', notify: 'none' },
     { parts: [{ kind: 'text', text: 'the key is tif_agent_SECRETSECRETSECRET and API_TOKEN=abc123' }] },
     [{ agentId: 'you', boxPublic: recipient.boxPublic }],
     sender,
@@ -190,12 +249,13 @@ test('floor: secrets and code from the command line are refused read-only and he
 // ---- what is accepted from the inbox ----
 
 const ME = '0192f000-0000-7000-8000-0000000000bb'
+const FAR = '2099-01-01T00:00:00Z'
 const PEER = '0192f000-0000-7000-8000-0000000000aa'
 
-function sealedItem(sender: T.KeyPair, recipient: T.KeyPair, over?: { kind?: 'message' | 'task'; taskId?: string | null; plaintextTaskId?: string }) {
+function sealedItem(sender: T.KeyPair, recipient: T.KeyPair, over?: { kind?: 'message' | 'task'; taskId?: string | null; deadlineAt?: string }) {
   const taskId = over?.taskId === undefined ? '0192f000-0000-7000-8000-0000000000d2' : over.taskId
   const sealed = sealMessage(
-    { kind: over?.kind ?? 'task', from: PEER, to: { agents: [ME] }, topics: [], requestId: null, taskId, parentTaskId: null, depth: 1, deadlineAt: '2026-10-18T00:00:00Z', permission: 'read', notify: 'none' },
+    { kind: over?.kind ?? 'task', from: PEER, to: { agents: [ME] }, topics: [], requestId: null, taskId, parentTaskId: null, depth: 1, deadlineAt: over?.deadlineAt ?? FAR, permission: 'read', notify: 'none' },
     { parts: [{ kind: 'text', text: 'please look' }] },
     [{ agentId: ME, boxPublic: recipient.boxPublic }],
     sender,
@@ -222,8 +282,21 @@ test('inbox: a signed body opens; a bad signature, a stranger, a body-less clien
   expect(acceptItem({ ...item, body: null, sig: null }, ME, me, pins)).toEqual({ type: 'drop', reason: 'no body on a client kind' })
   expect(acceptItem({ ...item, raw: { ...item.raw, kind: 'approval_update' } }, ME, me, pins)).toEqual({ type: 'drop', reason: 'a body on a hub kind' })
   // A hub item is only a hint (no body): it carries no text to run.
-  const hint = acceptItem({ ...item, raw: { ...item.raw, kind: 'approval_update', hub: { approvalId: 'a' } }, body: null, sig: null }, ME, me, pins)
+  const hint = acceptItem({ ...item, raw: { ...item.raw, from: 'hub', kind: 'approval_update', hub: { approvalId: 'a' } }, body: null, sig: null }, ME, me, pins)
   expect(hint.type).toBe('hub')
+  // A hub kind or a body-less status must come from the hub itself.
+  expect(acceptItem({ ...item, raw: { ...item.raw, kind: 'approval_update', hub: { approvalId: 'a' } }, body: null, sig: null }, ME, me, pins).type).toBe('drop')
+  const ended = acceptItem({ ...item, raw: { ...item.raw, from: 'hub', kind: 'status', hub: { state: 'failed', refusal: 'no_bidder' } }, body: null, sig: null }, ME, me, pins)
+  expect(ended.type === 'hub' && ended.kind).toBe('status')
+  // A body claiming to be from the hub, or past its deadline: dropped.
+  expect(acceptItem({ ...item, raw: { ...item.raw, from: 'hub' } }, ME, me, pins)).toEqual({ type: 'drop', reason: 'a body from the hub' })
+  const late = sealedItem(sender, me, { deadlineAt: '2026-01-01T00:00:00Z' })
+  expect(acceptItem(late, ME, me, pins)).toEqual({ type: 'drop', reason: 'past its deadline' })
+  // Ids that are not UUIDs (they would name files here): the envelope is refused.
+  expect(acceptItem({ ...item, raw: { ...item.raw, from: '../../.claude' } }, ME, me, pins)).toEqual({ type: 'drop', reason: 'malformed envelope' })
+  expect(acceptItem({ ...item, raw: { ...item.raw, taskId: 'x\nrm' } }, ME, me, pins)).toEqual({ type: 'drop', reason: 'malformed envelope' })
+  // A pin store with no prototype: `__proto__` is no sender.
+  expect(acceptItem({ ...item, raw: { ...item.raw, from: '__proto__' } }, ME, me, pins).type).toBe('drop')
   // The hub moving a body under another envelope: the AAD no longer matches.
   expect(acceptItem({ ...item, raw: { ...item.raw, taskId: '0192f000-0000-7000-8000-0000000000ee' } }, ME, me, pins).type).toBe('drop')
 })
@@ -291,24 +364,29 @@ test('setup: the agent credential, the API URL and where owner proofs come from'
   expect(dev).toEqual({ ok: true, credentials: { key: 'tif_agent_dev', url: 'http://localhost:8080', owner: undefined } })
   const devOwner = resolveAgentCredentials({ agentKey: '', apiUrl: '' }, 'TALKIF_AGENT_KEY=tif_agent_dev\nTALKIF_API_URL=http://localhost:8080\nTALKIF_AGENT_RP_ID=localhost\nTALKIF_AGENT_ORIGINS=https://localhost:5003')
   expect(devOwner?.ok && devOwner.credentials.owner).toEqual({ rpId: 'localhost', origins: ['https://localhost:5003'] })
-  expect(refusalReason(403, '{"code":"forbidden","meta":{"refusal":"paused"}}')?.reason).toMatch(/paused/)
-  expect(refusalReason(401, '{"meta":{"refusal":"credential_revoked"}}')?.reason).toMatch(/revoked/)
-  expect(refusalReason(409, '{"meta":{"refusal":"key_already_set"}}')?.next).toMatch(/rotate/)
+  // Personal Agent answers are read by agentRefusalReason, on agent routes only.
+  expect(agentRefusalReason('{"code":"forbidden","meta":{"refusal":"paused"}}')?.reason).toMatch(/paused/)
+  expect(agentRefusalReason('{"meta":{"refusal":"credential_revoked"}}')?.reason).toMatch(/revoked/)
+  expect(agentRefusalReason('{"meta":{"refusal":"key_already_set"}}')?.next).toMatch(/rotate/)
   for (const code of ['not_enabled', 'session_superseded', 'owner_proof_required', 'sender_may_not_assign_writes']) {
-    expect(refusalReason(403, `{"meta":{"refusal":"${code}"}}`)).not.toBe(undefined)
+    expect(agentRefusalReason(`{"meta":{"refusal":"${code}"}}`)).not.toBe(undefined)
   }
-  // Connectors answers are unchanged.
+  // Connectors answers are unchanged: a body that happens to carry such a key never pauses the bridge.
+  expect(refusalReason(200, '{"turn":{"text":"x","refusal":"paused"}}')).toBe(undefined)
+  expect(refusalReason(409, '{"meta":{"refusal":"credential_revoked"}}')).toBe(undefined)
+  expect(refusalReason(204, '{"refusal":"not_enabled"}')).toBe(undefined)
+  expect(refusalReason(403, '{"meta":{"refusal":"paused"}}')?.reason).toBe('the API key is not allowed to do this')
   expect(refusalReason(409, '{"code":"conflict"}')).toBe(undefined)
   expect(refusalReason(403, '{"code":"connectors_consent_required"}')?.reason).toMatch(/Connectors/)
 })
 
 // ---- the engine end to end ----
 
-type Fake = { files: Map<string, string>; argv: string[][]; stdin: string[]; urls: string[]; tools: string[]; commands: string[]; prompts: string[] }
+type Fake = { files: Map<string, string>; argv: string[][]; stdin: string[]; urls: string[]; tools: string[]; commands: string[]; prompts: string[]; status: string[] }
 
 /** A machine for the plugin: files kept in memory, the shell answered like Linux. */
 function fakeMachine(on: On, os: 'Linux' | 'Darwin' = 'Linux', fileMode = '600'): Fake {
-  const f: Fake = { files: new Map(), argv: [], stdin: [], urls: [], tools: [], commands: [], prompts: [] }
+  const f: Fake = { files: new Map(), argv: [], stdin: [], urls: [], tools: [], commands: [], prompts: [], status: [] }
   const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', (_$, e) => {
     const argv = [...e.argv]
@@ -321,6 +399,12 @@ function fakeMachine(on: On, os: 'Linux' | 'Darwin' = 'Linux', fileMode = '600')
     if (cmd === 'stat') return out(`${fileMode} 1000\n`)
     if (cmd === 'hostname') return out('box\n')
     if (cmd === 'sleep' || cmd === 'security') return out('')
+    // The lock: created only when it does not exist (`set -C`).
+    if (cmd === 'sh' && argv[2]?.includes('set -C') && argv[4]) {
+      if (f.files.has(argv[4])) return out('', 1)
+      f.files.set(argv[4], argv[5] ?? '')
+      return out('')
+    }
     if (cmd === 'sh' && argv[4]) {
       f.files.set(argv[4], e.init?.stdin ?? '')
       return out('')
@@ -330,11 +414,17 @@ function fakeMachine(on: On, os: 'Linux' | 'Darwin' = 'Linux', fileMode = '600')
   on('fs.exists', (_$, e) => ({ value: f.files.has(e.path) }))
   on('fs.read', (_$, e) => ({ value: f.files.get(e.path) ?? '' }))
   on('fs.stat', (_$, e) => ({ value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: e.path } }))
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.write', (_$, e) => {
+    f.files.set(e.path, e.text)
+    return { value: undefined }
+  })
   on('session.id', () => ({ value: 'session-test' }))
   on('session.messages', () => ({ value: [] }))
   on('ui.log', () => ({ value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', (_$, e) => {
+    f.status.push(JSON.stringify(e))
+    return { value: undefined }
+  })
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.close', () => ({ value: undefined }))
   on('command.register', (_$, e) => {
@@ -380,22 +470,31 @@ test('without an agent credential: no agent tool, command, request or status par
 test('a session in another folder than the bound one never polls and registers no agent tools', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
   const clock = mock.clock(on)
   // This machine connected before: the agent id is known and bound to another folder.
-  mock.store(on, { [`agent:id:${T.sha256Hex('tif_agent_FAKEFAKEFAKE').slice(0, 16)}`]: 'agent-1' })
+  mock.store(on, { [`agent:id:${T.sha256Hex('tif_agent_FAKEFAKEFAKE').slice(0, 16)}`]: '0192f000-0000-7000-8000-00000000a001' })
   const f = fakeMachine(on)
   on('http.fetch', (_$, e) => {
     f.urls.push(e.url)
     return jsonAnswer(404, { code: 'not_found' })
   })
-  f.files.set('/home/test/.config/talkif/agent/agent-1.json', JSON.stringify({ root: '/home/test/other' }))
+  f.files.set('/home/test/.config/talkif/agent/0192f000-0000-7000-8000-00000000a001.json', JSON.stringify({ root: '/home/test/other' }))
   await start($)
   await clock.advance(120_000)
   expect(f.urls.filter(u => u.includes('/me/agents'))).toEqual([])
   expect(f.tools.some(t => t !== 'call_me')).toBe(false)
 })
 
-/** A fake hub: one agent ("agent-1") of one person, with one peer ("peer-1"). */
-function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'ask_everything' | 'read_only' }) {
-  const hub = { boxPublic: undefined as Uint8Array | undefined, nonce: T.randomBytes(32), sid: '0192f000-0000-7000-8000-00000000c0de', proofs: [] as (string | undefined)[], inbox: [] as unknown[], approvals: [] as Json[], approvalState: 'denied', redeemed: 0, statuses: [] as Json[], terminal: [] as Json[], hold: false, unproven: [] as string[] }
+/** A fake hub: one agent ("0192f000-0000-7000-8000-00000000a001") of one person, with one peer ("0192f000-0000-7000-8000-00000000f001"). */
+const A1 = '0192f000-0000-7000-8000-00000000a001'
+const P1 = '0192f000-0000-7000-8000-00000000f001'
+const R1 = '0192f000-0000-7000-8000-00000000e001'
+const D2 = '0192f000-0000-7000-8000-0000000000d2'
+const peerTask = (over: Json = {}): Json => ({ taskId: D2, requestId: R1, depth: 1, fromAgentId: P1, fromAgentName: 'Phone', toAgentId: A1, state: 'submitted', permission: 'local_write', granted: 'local_write', deadlineAt: FAR, ...over })
+
+function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'ask_everything' | 'read_only'; selfId?: string }) {
+  const hub = {
+    boxPublic: undefined as Uint8Array | undefined, nonce: T.randomBytes(32), sid: '0192f000-0000-7000-8000-00000000c0de', proofs: [] as (string | undefined)[], inbox: [] as unknown[], approvals: [] as Json[], approvalState: 'denied', redeemed: 0, statuses: [] as Json[], terminal: [] as Json[], hold: false, unproven: [] as string[],
+    tasks: { [D2]: peerTask() } as Record<string, Json>, posted: [] as Json[], postedTaskId: undefined as string | undefined, cancels: [] as string[], bids: [] as Json[], sessions: 0,
+  }
   const held: Array<() => void> = []
   const waiting: Array<() => void> = []
   on('http.fetch', (_$, e) => {
@@ -414,7 +513,7 @@ function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'a
       return jsonAnswer(401, { code: 'token_invalid', meta: { refusal: 'session_invalid' } })
     }
     if (!/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/.test(headers.traceparent ?? '')) return jsonAnswer(400, { code: 'validation_failed' })
-    if (path === '/self' && method === 'GET') return jsonAnswer(200, { agentId: 'agent-1', keySet: hub.boxPublic !== undefined, receiver: null, mode: opts.mode, granted: { localWrite: true }, paused: false, card: { name: 'laptop' } })
+    if (path === '/self' && method === 'GET') return jsonAnswer(200, { agentId: opts.selfId ?? A1, keySet: hub.boxPublic !== undefined, receiver: null, mode: opts.mode, granted: { localWrite: true }, paused: false, card: { name: 'laptop' } })
     if (path === '/self/key') {
       const b = body as { publicKey: string }
       hub.boxPublic = T.fromB64url(b.publicKey)
@@ -423,10 +522,11 @@ function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'a
     if (path === '/self/card') return jsonAnswer(200, {})
     if (path === '/self/owner-keys') return jsonAnswer(200, { keys: [] })
     if (path === '/self/session') {
-      const sealed = hub.boxPublic ? T.seal(hub.nonce, hub.boxPublic, hub.sid, T.sessionAad(hub.sid, 'agent-1')) : undefined
-      return jsonAnswer(201, { sid: hub.sid, sealedNonce: sealed?.ciphertext, expiresAt: '2026-10-18T00:00:00Z' })
+      hub.sessions += 1
+      const sealed = hub.boxPublic ? T.seal(hub.nonce, hub.boxPublic, hub.sid, T.sessionAad(hub.sid, '0192f000-0000-7000-8000-00000000a001')) : undefined
+      return jsonAnswer(201, { sid: hub.sid, sealedNonce: sealed?.ciphertext, expiresAt: FAR })
     }
-    if (path === '/peers') return jsonAnswer(200, { peers: [{ agentId: 'peer-1', kind: 'phone', name: 'Phone', presence: 'online', capabilities: [], publicKey: T.b64url(peerKeys.boxPublic), signingKey: T.b64url(peerKeys.signPublic) }] })
+    if (path === '/peers') return jsonAnswer(200, { peers: [{ agentId: '0192f000-0000-7000-8000-00000000f001', kind: 'phone', name: 'Phone', presence: 'online', capabilities: [], publicKey: T.b64url(peerKeys.boxPublic), signingKey: T.b64url(peerKeys.signPublic) }] })
     if (path.startsWith('/inbox') && method === 'GET') {
       hub.proofs.push(headers['X-Talkif-Proof'])
       const items = hub.inbox.splice(0)
@@ -434,8 +534,23 @@ function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'a
       return new Promise<ReturnType<typeof jsonAnswer>>(resolve => waiting.push(() => resolve(jsonAnswer(204, undefined))))
     }
     if (path.endsWith('/ack')) return jsonAnswer(204, undefined)
-    if (path === '/tasks/0192f000-0000-7000-8000-0000000000d2' && method === 'GET') {
-      return jsonAnswer(200, { taskId: '0192f000-0000-7000-8000-0000000000d2', requestId: 'req-1', depth: 1, fromAgentId: 'peer-1', fromAgentName: 'Phone', toAgentId: 'agent-1', state: 'submitted', permission: 'local_write', granted: 'local_write', deadlineAt: '2026-10-18T00:00:00Z' })
+    const taskPath = /^\/tasks\/([0-9a-f-]{36})(\/[a-z]+)?$/.exec(path)
+    if (taskPath && !taskPath[2] && method === 'GET') {
+      const task = hub.tasks[taskPath[1] ?? '']
+      return task ? jsonAnswer(200, task) : jsonAnswer(404, { code: 'not_found' })
+    }
+    if (path === '/tasks' && method === 'POST') {
+      hub.posted.push(body as Json)
+      const env = (body as { envelope: Json }).envelope
+      return jsonAnswer(201, { requestId: R1, taskId: hub.postedTaskId ?? env.taskId, state: 'submitted' })
+    }
+    if (taskPath?.[2] === '/cancel') {
+      hub.cancels.push(taskPath[1] ?? '')
+      return jsonAnswer(200, {})
+    }
+    if (taskPath?.[2] === '/bid') {
+      hub.bids.push(body as Json)
+      return jsonAnswer(200, {})
     }
     if (path.endsWith('/status')) {
       hub.statuses.push(body as Json)
@@ -444,18 +559,18 @@ function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'a
     if (path === '/approvals' && method === 'POST') {
       hub.approvals.push(body as Json)
       const tier = String((body as Json).tier)
-      return jsonAnswer(201, { approvalId: 'appr-1', state: 'pending', tier, needsOwnerProof: !['local_write', 'unsure'].includes(tier), relayAllowed: false, expiresAt: '2026-10-18T00:00:00Z' })
+      return jsonAnswer(201, { approvalId: '0192f000-0000-7000-8000-00000000c001', state: 'pending', tier, needsOwnerProof: !['local_write', 'unsure'].includes(tier), relayAllowed: false, expiresAt: FAR })
     }
-    if (path === '/approvals/appr-1/terminal') {
+    if (path === '/approvals/0192f000-0000-7000-8000-00000000c001/terminal') {
       hub.terminal.push(body as Json)
       return jsonAnswer(200, {})
     }
-    if (path.startsWith('/approvals/appr-1') && method === 'GET') {
-      const answer = () => jsonAnswer(200, { approvalId: 'appr-1', state: hub.approvalState, expiresAt: '2026-10-18T00:00:00Z', ...(hub.approvalState === 'approved' ? { decidedVia: 'terminal' } : {}) })
+    if (path.startsWith('/approvals/0192f000-0000-7000-8000-00000000c001') && method === 'GET') {
+      const answer = () => jsonAnswer(200, { approvalId: '0192f000-0000-7000-8000-00000000c001', state: hub.approvalState, expiresAt: FAR, ...(hub.approvalState === 'approved' ? { decidedVia: 'terminal' } : {}) })
       if (hub.hold) return new Promise<ReturnType<typeof jsonAnswer>>(resolve => held.push(() => resolve(answer())))
       return answer()
     }
-    if (path === '/approvals/appr-1/redeem') {
+    if (path === '/approvals/0192f000-0000-7000-8000-00000000c001/redeem') {
       hub.redeemed += 1
       return jsonAnswer(200, { redeemed: true })
     }
@@ -466,9 +581,9 @@ function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'a
 
 function taskFromPeer(peerKeys: T.KeyPair, myBoxPublic: Uint8Array) {
   const sealed = sealMessage(
-    { kind: 'task', from: 'peer-1', to: { agents: ['agent-1'] }, topics: [], requestId: null, taskId: '0192f000-0000-7000-8000-0000000000d2', parentTaskId: null, depth: 1, deadlineAt: '2026-10-18T00:00:00Z', permission: 'local_write', notify: 'none' },
+    { kind: 'task', from: '0192f000-0000-7000-8000-00000000f001', to: { agents: ['0192f000-0000-7000-8000-00000000a001'] }, topics: [], requestId: null, taskId: '0192f000-0000-7000-8000-0000000000d2', parentTaskId: null, depth: 1, deadlineAt: FAR, permission: 'local_write', notify: 'none' },
     { parts: [{ kind: 'text', text: 'fix the build' }] },
-    [{ agentId: 'agent-1', boxPublic: myBoxPublic }],
+    [{ agentId: '0192f000-0000-7000-8000-00000000a001', boxPublic: myBoxPublic }],
     peerKeys,
   )
   return { deliveryId: 'dlv-1', lane: 'inbox', envelope: sealed?.envelope, body: sealed?.bodies[0]?.ct, sig: sealed?.bodies[0]?.sig, redelivered: false }
@@ -490,10 +605,10 @@ test('connect: keys made here, stored outside argv, the session proven with the 
   const { f, hub } = await connectedSession($, on, { mode: 'auto' })
   expect(hub.boxPublic?.length).toBe(32)
   // The private keys went to a 0600 file through stdin, never on a command line.
-  const keyFile = f.files.get('/home/test/.config/talkif/agent/agent-1.key') ?? ''
+  const keyFile = f.files.get('/home/test/.config/talkif/agent/0192f000-0000-7000-8000-00000000a001.key') ?? ''
   expect(keyFile.trim()).toMatch(/^[0-9a-f]{128}$/)
   expect(f.argv.some(a => a.some(w => w.includes(keyFile.trim())))).toBe(false)
-  expect(f.files.get('/home/test/.config/talkif/agent/agent-1.json')).toBe(JSON.stringify({ root: '/home/test/repo' }))
+  expect(f.files.get('/home/test/.config/talkif/agent/0192f000-0000-7000-8000-00000000a001.json')).toBe(JSON.stringify({ root: '/home/test/repo' }))
   expect(hub.proofs[0]).toBe(T.sessionProof(hub.nonce, hub.sid))
   expect(hub.unproven).toEqual([])
   expect(f.urls.some(u => u.endsWith('/self/owner-keys'))).toBe(true)
@@ -511,7 +626,7 @@ test('macOS: the private keys go to the keychain through security -i stdin, not 
   await clock.advance(1_000)
   const call = f.argv.find(a => a[0] === 'security')
   expect(call).toEqual(['security', '-i'])
-  expect(f.stdin.some(s => /^add-generic-password -U -s talkif-agent -a agent-1 -w [0-9a-f]{128}\n$/.test(s))).toBe(true)
+  expect(f.stdin.some(s => /^add-generic-password -U -s "talkif-agent" -a "0192f000-0000-7000-8000-00000000a001" -w "[0-9a-f]{128}"\n$/.test(s))).toBe(true)
 })
 
 test('peer task, peerTasks default read-only: an edit is refused even when Talkif says auto', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
@@ -542,7 +657,7 @@ test('peer task, follow-hub + auto: a local edit runs; git push is held in tool.
   const push = await $.tool.call({ tool: 'Bash', command: 'git push origin main' })
   expect(denied(push)).toMatch(/denied/)
   expect(hub.approvals[0]).toMatchObject({ tier: 'outward', tool: 'Bash', input: { command: 'git push origin main' }, cwd: '/home/test/repo' })
-  expect(hub.approvals[0]?.actionHash).toBe(T.actionHash({ agentId: 'agent-1', taskId: '0192f000-0000-7000-8000-0000000000d2', tool: 'Bash', input: { command: 'git push origin main' }, cwd: '/home/test/repo' }))
+  expect(hub.approvals[0]?.actionHash).toBe(T.actionHash({ agentId: '0192f000-0000-7000-8000-00000000a001', taskId: '0192f000-0000-7000-8000-0000000000d2', tool: 'Bash', input: { command: 'git push origin main' }, cwd: '/home/test/repo' }))
   expect(hub.redeemed).toBe(0)
   // Approved, but no owner proof a confirmed passkey verifies: still refused, never redeemed.
   hub.approvalState = 'approved'
@@ -608,6 +723,7 @@ test('callerName reaches the ask prompt (regression)', { options: { apiKey: 'tif
   expect(prompts.some(p => p.startsWith('Question from Ada Lovelace on a call'))).toBe(true)
 })
 
+const AP = '0192f000-0000-7000-8000-00000000c001'
 const PANE_PROPS = { title: 'Talkif agent', isFocused: true, bodyColumns: 100, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
 
 test('approval pane: approve is offered only for local_write; an outward action offers deny only', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
@@ -621,10 +737,10 @@ test('approval pane: approve is offered only for local_write; an outward action 
   const edit = $.tool.call({ tool: 'Edit', file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' })
   await clock.advance(10)
   const ui = await $.ui.mount({ plugin: 'call-me', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'call-me-agent' })
-  expect(await ui.find({ key: 'approval:appr-1:approve' })).not.toBe(undefined)
+  expect(await ui.find({ key: 'approval:0192f000-0000-7000-8000-00000000c001:approve' })).not.toBe(undefined)
   expect((await ui.find({ text: /"file_path":"\/home\/test\/repo\/a.ts"/ })) !== undefined).toBe(true)
-  await ui.press({ key: 'approval:appr-1:approve' })
-  const hash = T.actionHash({ agentId: 'agent-1', taskId: '0192f000-0000-7000-8000-0000000000d2', tool: 'Edit', input: { file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }, cwd: '/home/test/repo' })
+  await ui.press({ key: 'approval:0192f000-0000-7000-8000-00000000c001:approve' })
+  const hash = T.actionHash({ agentId: '0192f000-0000-7000-8000-00000000a001', taskId: '0192f000-0000-7000-8000-0000000000d2', tool: 'Edit', input: { file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }, cwd: '/home/test/repo' })
   expect(hub.terminal[0]).toEqual({ decision: 'approve', actionHash: hash })
   hub.approvalState = 'approved'
   releaseApprovals()
@@ -635,8 +751,8 @@ test('approval pane: approve is offered only for local_write; an outward action 
   const push = $.tool.call({ tool: 'Bash', command: 'git push origin main' })
   await clock.advance(10)
   const ui2 = await $.ui.mount({ plugin: 'call-me', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'call-me-agent' })
-  expect(await ui2.find({ key: 'approval:appr-1:approve' })).toBe(undefined)
-  await ui2.press({ key: 'approval:appr-1:deny' })
+  expect(await ui2.find({ key: 'approval:0192f000-0000-7000-8000-00000000c001:approve' })).toBe(undefined)
+  await ui2.press({ key: 'approval:0192f000-0000-7000-8000-00000000c001:deny' })
   expect(hub.terminal[1]).toEqual({ decision: 'deny' })
   hub.approvalState = 'denied'
   releaseApprovals()
@@ -650,9 +766,249 @@ test('Linux: a key file others can read is refused, and no session is opened', {
   const { hub } = fakeHub(on, f, T.generateKeyPair(), { mode: 'auto' })
   // Talkif already has this agent's keys; the local key file is world-readable.
   hub.boxPublic = T.generateKeyPair().boxPublic
-  f.files.set('/home/test/.config/talkif/agent/agent-1.key', `${'ab'.repeat(64)}\n`)
+  f.files.set('/home/test/.config/talkif/agent/0192f000-0000-7000-8000-00000000a001.key', `${'ab'.repeat(64)}\n`)
   await start($)
   await clock.advance(1_000)
   expect(f.urls.some(u => u.endsWith('/self/session'))).toBe(false)
   expect(f.urls.some(u => u.includes('/inbox'))).toBe(false)
+})
+
+// ---- review fixes: marks, ids, the lock, hidden characters, recipients, bids, ends, deadlines, the shell's folder ----
+
+const OTHER = '0192f000-0000-7000-8000-00000000b0b0'
+const T2 = '0192f000-0000-7000-8000-0000000000d3'
+
+const hubItem = (kind: string, taskId: string, hub: Json = {}) => ({
+  deliveryId: T.uuidv7(),
+  lane: 'control',
+  envelope: { v: 1, messageId: T.uuidv7(), kind, from: 'hub', to: { agents: [A1] }, topics: [], requestId: R1, taskId, parentTaskId: null, depth: 1, deadlineAt: FAR, permission: 'read', notify: 'none', sizeBytes: 0, hub: { taskId, ...hub } },
+  body: null,
+  sig: null,
+  redelivered: false,
+})
+
+async function peerTurn($: Engine, f: Fake, clock: { advance: (ms: number) => Promise<void> }, hub: { inbox: unknown[]; boxPublic: Uint8Array | undefined }, peerKeys: T.KeyPair, release: () => void, prefix = '') {
+  hub.inbox.push(taskFromPeer(peerKeys, hub.boxPublic ?? new Uint8Array()))
+  release()
+  await clock.advance(1_000)
+  const prompt = f.prompts.find(p => p.startsWith('[peer-task:')) ?? ''
+  expect(prompt).not.toBe('')
+  await $.turn.start({ text: `${prefix}${prompt}`, turnId: 'turn-1' })
+}
+
+test('a peer-task mark after typed text still covers the turn (a merged prompt never runs unguarded)', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const { f, hub, peerKeys, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  await peerTurn($, f, clock, hub, peerKeys, release, 'and also look at the docs\n')
+  expect(denied(await $.tool.call({ tool: 'Edit', file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }))).toMatch(/runs read-only/)
+})
+
+test('a peer-task mark after typed text finds its run (follow-hub + auto: a local edit runs, a push is held)', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
+  const { f, hub, peerKeys, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  await peerTurn($, f, clock, hub, peerKeys, release, 'typed first\n')
+  expect(ran(await $.tool.call({ tool: 'Edit', file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }))).toBe('ran Edit')
+  expect(denied(await $.tool.call({ tool: 'Bash', command: 'git push origin main' }))).toMatch(/denied/)
+  expect(hub.statuses).toEqual(expect.arrayContaining([{ state: 'working' }]))
+})
+
+test('a turn with a peer-task mark whose run is unknown is covered read-only', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
+  await connectedSession($, on, { mode: 'auto' })
+  await $.turn.start({ text: 'please [peer-task:not-an-id] do it', turnId: 'turn-9' })
+  expect(denied(await $.tool.call({ tool: 'Edit', file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }))).toMatch(/runs read-only/)
+})
+
+for (const os of ['Linux', 'Darwin'] as const) {
+  for (const badId of ['x\ndump-keychain', '../../../.claude', 'AGENT-1', '__proto__']) {
+    test(`an agent id that is not a UUID is refused (${os}, ${JSON.stringify(badId)}): no key, file or keychain command`, { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+      const clock = mock.clock(on)
+      mock.store(on)
+      const f = fakeMachine(on, os)
+      const { hub } = fakeHub(on, f, T.generateKeyPair(), { mode: 'auto', selfId: badId })
+      await start($)
+      await clock.advance(1_000)
+      expect(f.urls.some(u => u.endsWith('/self/key') || u.endsWith('/self/session') || u.endsWith('/self/card'))).toBe(false)
+      expect(hub.boxPublic).toBe(undefined)
+      expect(f.argv.some(a => a[0] === 'security')).toBe(false)
+      expect([...f.files.keys()].every(k => /^\/home\/test\/\.config\/talkif\/agent\/[0-9a-f-]{36}\.|^\/home\/test\/\.config\/talkif\/agent\/machine-id$/.test(k))).toBe(true)
+      expect(f.tools.some(t => t !== 'call_me')).toBe(false)
+    })
+  }
+}
+
+test('a second session in the bound folder stands by before any key, card or session request, and registers no agent tool', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const f = fakeMachine(on)
+  const { hub } = fakeHub(on, f, T.generateKeyPair(), { mode: 'auto' })
+  f.files.set(`/home/test/.config/talkif/agent/${A1}.json`, JSON.stringify({ root: '/home/test/repo' }))
+  f.files.set(`/home/test/.config/talkif/agent/${A1}.lock`, JSON.stringify({ session: 'the-live-one', at: 0 }))
+  await start($)
+  await clock.advance(1_000)
+  expect(hub.sessions).toBe(0)
+  expect(f.urls.some(u => u.endsWith('/self/key') || u.endsWith('/self/card') || u.endsWith('/peers') || u.includes('/inbox'))).toBe(false)
+  expect(f.tools.some(t => t !== 'call_me')).toBe(false)
+  expect(f.status.some(s => s.includes('standby'))).toBe(true)
+  // The live session stops (its lock goes stale): this one takes over.
+  await clock.advance(61_000)
+  expect(hub.sessions).toBe(1)
+  expect(JSON.parse(f.files.get(`/home/test/.config/talkif/agent/${A1}.lock`) ?? '{}').session).toBe('session-test')
+})
+
+test('approval card: hidden characters are shown as \\uXXXX and only deny is offered', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
+  const { f, hub, peerKeys, clock, release, releaseApprovals } = await connectedSession($, on, { mode: 'ask_everything' })
+  await peerTurn($, f, clock, hub, peerKeys, release)
+  hub.hold = true
+  const call = $.tool.call({ tool: 'Bash', command: 'echo ‮abc​' })
+  await clock.advance(10)
+  const ui = await $.ui.mount({ plugin: 'call-me', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'call-me-agent' })
+  expect(await ui.find({ key: `approval:${AP}:approve` })).toBe(undefined)
+  expect((await ui.find({ text: /echo \\u202Eabc\\u200B/ })) !== undefined).toBe(true)
+  expect((await ui.find({ text: /hidden characters/ })) !== undefined).toBe(true)
+  await ui.press({ key: `approval:${AP}:deny` })
+  expect(hub.terminal[0]).toEqual({ decision: 'deny' })
+  releaseApprovals()
+  expect(denied(await call)).toMatch(/denied/)
+})
+
+test('recipients: an exact id or name, or one unique prefix; never a guess', async () => {
+  const peers = [peer('Desk', true), peer('Desktop', true), peer('Phone', true)].map((p, i) => ({ ...p, agentId: `0192f000-0000-7000-8000-00000000000${i}` }))
+  expect(findPeer('', peers)).toBe(undefined)
+  expect(findPeer('   ', peers)).toBe(undefined)
+  expect(findPeer('desk', peers)?.name).toBe('Desk')
+  expect(findPeer('DESKTOP', peers)?.name).toBe('Desktop')
+  expect(findPeer('ph', peers)?.name).toBe('Phone')
+  expect(findPeer('de', peers)).toBe(undefined) // two start with it
+  expect(findPeer('desk', [...peers, { ...peer('desk', true), agentId: '0192f000-0000-7000-8000-000000000009' }])).toBe(undefined) // two named so
+  expect(findPeer('one', peers)).toBe(undefined) // inside a name, not its start
+  expect(findPeer('0192f000-0000-7000-8000-000000000002', peers)?.name).toBe('Phone')
+})
+
+test('delegate: a task id Talkif changes is canceled; no target and no valid capability sends nothing', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const { hub } = await connectedSession($, on, { mode: 'auto' })
+  hub.postedTaskId = OTHER
+  const changed = await $.tool.call({ tool: 'mcp__call-me__delegate', task: 'check the build', agent: 'Phone' })
+  expect(JSON.stringify(changed)).toMatch(/another task id/)
+  expect(hub.cancels).toContain(OTHER)
+  hub.postedTaskId = undefined
+  for (const input of [{ task: 'x' }, { task: 'x', capabilities: [] }, { task: 'x', capabilities: ['ios', 'NOT VALID!'] }, { task: 'x', agent: '' }, { task: 'x', agent: 'P' }]) {
+    const before = hub.posted.length
+    const res = await $.tool.call({ tool: 'mcp__call-me__delegate', ...input })
+    expect(`${JSON.stringify(input)} → ${hub.posted.length - before}`).toBe(`${JSON.stringify(input)} → ${input.agent === 'P' ? 1 : 0}`)
+    if (input.agent !== 'P') expect(JSON.stringify(res)).toMatch(/isError/)
+  }
+  // tell_agent sends depth 1 (a message is no hop of a task).
+  hub.posted.length = 0
+})
+
+test('bids: a write task is never bid on when this machine would run it read-only', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const { hub, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  hub.tasks[T2] = peerTask({ taskId: T2, toAgentId: undefined, permission: 'local_write' })
+  hub.inbox.push(hubItem('bid_request', T2))
+  release()
+  await clock.advance(1_000)
+  expect(hub.bids[0]).toEqual({ can: false, confidence: 0 })
+  hub.tasks[T2] = peerTask({ taskId: T2, toAgentId: undefined, permission: 'read' })
+  hub.inbox.push(hubItem('bid_request', T2))
+  release()
+  await clock.advance(1_000)
+  expect(hub.bids[1]).toEqual({ can: true, confidence: 60 })
+})
+
+test('bids: with follow-hub and auto a write task is bid on', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
+  const { hub, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  hub.tasks[T2] = peerTask({ taskId: T2, toAgentId: undefined, permission: 'local_write' })
+  hub.inbox.push(hubItem('bid_request', T2))
+  release()
+  await clock.advance(1_000)
+  expect(hub.bids[0]).toEqual({ can: true, confidence: 60 })
+})
+
+test('a task this session gave that Talkif ends with no body (status from the hub) leaves the status line', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const { f, hub, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  const sent = await $.tool.call({ tool: 'mcp__call-me__delegate', task: 'check the build', agent: 'Phone' })
+  const taskId = /Task ([0-9a-f-]{36}) sent/.exec(JSON.stringify(sent))?.[1] ?? ''
+  expect(taskId).not.toBe('')
+  expect(f.status.at(-1)).toMatch(/1 running/)
+  hub.tasks[taskId] = peerTask({ taskId, fromAgentId: A1, toAgentId: undefined, state: 'failed', refusal: 'no_bidder', permission: 'read' })
+  hub.inbox.push(hubItem('status', taskId, { state: 'failed', refusal: 'no_bidder' }))
+  release()
+  await clock.advance(1_000)
+  expect(f.status.at(-1)).not.toMatch(/running/)
+  const inbox = await $.tool.call({ tool: 'mcp__call-me__check_inbox' })
+  expect(JSON.stringify(inbox)).toMatch(/failed \(no_bidder\)/)
+})
+
+test('a task past its deadline, or from another agent than its row names, never starts', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const { f, hub, peerKeys, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  hub.tasks[D2] = peerTask({ deadlineAt: '2026-01-01T00:00:00Z' })
+  hub.inbox.push(taskFromPeer(peerKeys, hub.boxPublic ?? new Uint8Array()))
+  release()
+  await clock.advance(1_000)
+  hub.tasks[D2] = peerTask({ fromAgentId: OTHER })
+  const again = taskFromPeer(peerKeys, hub.boxPublic ?? new Uint8Array())
+  hub.inbox.push({ ...again, deliveryId: 'dlv-2' })
+  release()
+  await clock.advance(1_000)
+  expect(f.prompts.some(p => p.startsWith('[peer-task:'))).toBe(false)
+})
+
+test('a result is taken only from the agent its task went to', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const { hub, peerKeys, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  const resultFor = (taskId: string) => {
+    const sealed = sealMessage(
+      { kind: 'result', from: P1, to: { agents: [A1] }, topics: [], requestId: R1, taskId, parentTaskId: null, depth: 1, deadlineAt: FAR, permission: 'read', notify: 'none' },
+      { parts: [{ kind: 'text', text: 'all green' }] },
+      [{ agentId: A1, boxPublic: hub.boxPublic ?? new Uint8Array() }],
+      peerKeys,
+    )
+    return { deliveryId: T.uuidv7(), lane: 'inbox', envelope: sealed?.envelope, body: sealed?.bodies[0]?.ct, sig: sealed?.bodies[0]?.sig, redelivered: false }
+  }
+  hub.tasks[T2] = peerTask({ taskId: T2, fromAgentId: A1, toAgentId: OTHER, state: 'completed' })
+  hub.inbox.push(resultFor(T2))
+  release()
+  await clock.advance(1_000)
+  expect(JSON.stringify(await $.tool.call({ tool: 'mcp__call-me__check_inbox' }))).toMatch(/Nothing new/)
+  hub.tasks[T2] = peerTask({ taskId: T2, fromAgentId: A1, toAgentId: P1, state: 'completed' })
+  hub.inbox.push(resultFor(T2))
+  release()
+  await clock.advance(1_000)
+  expect(JSON.stringify(await $.tool.call({ tool: 'mcp__call-me__check_inbox' }))).toMatch(/all green/)
+})
+
+test("the shell's folder: after a cd out of the project, a peer task's relative delete is held, not run", { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
+  const { f, hub, peerKeys, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  // Before the task: rm of a relative path inside the folder is local work.
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'cd ~' }))).toBe('ran Bash')
+  await peerTurn($, f, clock, hub, peerKeys, release)
+  const rm = await $.tool.call({ tool: 'Bash', command: 'rm -rf Documents' })
+  expect(denied(rm)).toMatch(/denied/)
+  expect(hub.approvals[0]).toMatchObject({ tier: 'irreversible', input: { command: 'rm -rf Documents' } })
+  // Starting the command in the project folder makes it local again.
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'cd /home/test/repo && rm -rf build' }))).toBe('ran Bash')
+})
+
+test('read-only peer task: recursive reads over the home folder are refused; in a folder not known, relative paths are refused', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const { f, hub, peerKeys, clock, release } = await connectedSession($, on, { mode: 'auto' })
+  await peerTurn($, f, clock, hub, peerKeys, release)
+  for (const command of ['grep -rh "" ~/.config', 'grep -r "" /home/test/.config', 'grep -r x ~', 'grep -r tif_ /home/test', 'rg agent /']) {
+    expect(denied(await $.tool.call({ tool: 'Bash', command }))).toMatch(/credential files/)
+  }
+  expect(denied(await $.tool.call({ tool: 'Grep', pattern: 'x', path: '/home/test/.config' }))).toMatch(/credential files/)
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'grep -rn foo src' }))).toBe('ran Bash')
+  expect(ran(await $.tool.call({ tool: 'Grep', pattern: 'x', path: '/home/test/repo/src' }))).toBe('ran Grep')
+})
+
+test('tiers: relative paths judged from every folder the shell may be in', async () => {
+  const at = (command: string, cwds: (string | undefined)[]) => classify('Bash', { command }, '/repo', cwds)
+  expect(at('rm -rf build', ['/repo'])).toBe('local_write')
+  expect(at('rm -rf build', ['/repo', '/repo/web'])).toBe('local_write')
+  expect(at('rm -rf ../build', ['/repo/web'])).toBe('local_write')
+  expect(at('rm -rf ../build', ['/repo', '/repo/web'])).toBe('irreversible')
+  expect(at('rm -rf build', [undefined])).toBe('irreversible')
+  expect(at('cargo test', [undefined])).toBe('unsure')
+  expect(at('cat notes.md', [undefined])).toBe('unsure')
+  expect(at('cd /repo && rm -rf build', [undefined])).toBe('local_write')
+  expect(shellCwdsAfter('cd web && yarn build', ['/repo'], '/repo')).toEqual(['/repo', '/repo/web'])
+  expect(shellCwdsAfter('cd ~', ['/repo'], '/repo')).toEqual(['/repo', undefined])
+  expect(shellCwdsAfter('cd .. ', ['/repo'], '/repo')).toEqual(['/repo', undefined])
+  expect(shellCwdsAfter('ls -la', ['/repo'], '/repo')).toEqual(['/repo'])
 })

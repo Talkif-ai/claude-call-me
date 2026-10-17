@@ -206,6 +206,91 @@ export const namesCredentialPath = (command: string): boolean =>
     .flatMap(word => [word, ...word.split(/[=:]/)])
     .some(isCredentialPath)
 
+// ---- recursive reads of a folder that holds credential folders ----
+// `grep -r "" ~/.config` names no credential path, yet reads ~/.config/talkif,
+// ~/.ssh and the rest. A recursive reader whose root is the home folder, its
+// .config, a user folder, /Users, /home or / is refused like a credential path.
+
+const ANCESTOR = /^(?:\/System\/Volumes\/Data)?(?:\/|\/(?:Users|home)(?:\/[^/]+(?:\/\.config)?)?|\/root(?:\/\.config)?|\/var\/root(?:\/\.config)?)$|^~[^/]*(?:\/\.config)?$/
+
+/** Whether a folder (absolute, or `~…`) holds credential folders below it. */
+export const isCredentialAncestor = (path: string): boolean => {
+  const p = path.replace(/["']/g, '').replace(/\/+$/, '')
+  return ANCESTOR.test(p === '' ? '/' : p)
+}
+
+/**
+ * `path` as an absolute, normalized path when it runs in `base`; `~…` stays as
+ * written (the home folder is not known here). Undefined when it cannot be known:
+ * no base for a relative path, or a `$`/backquote in it.
+ */
+export function resolvePath(base: string | undefined, path: string): string | undefined {
+  const p = path.replace(/["']/g, '')
+  if (/[$`]/.test(p)) return undefined
+  if (p.startsWith('~')) return p.replace(/\/+$/, '') || '~'
+  const abs = p.startsWith('/') ? p : base === undefined ? undefined : `${base}/${p}`
+  if (abs === undefined) return undefined
+  const parts: string[] = []
+  for (const part of abs.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') parts.pop()
+    else parts.push(part)
+  }
+  return `/${parts.join('/')}`
+}
+
+const GREPS = new Set(['grep', 'egrep', 'fgrep', 'ggrep', 'zgrep'])
+const ALWAYS_RECURSIVE = new Set(['rg', 'ag', 'ack', 'ugrep', 'find', 'tree', 'du'])
+const PATTERN_FLAGS = /^(?:-[a-zA-Z]*[ef]|--regexp(?:=.*)?|--file(?:=.*)?)$/
+
+/** The folders a recursive reader in `words` searches (`.` when none is named), or undefined when it is not one. */
+export function recursiveTargets(words: readonly string[]): string[] | undefined {
+  let i = 0
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i] ?? '')) i++
+  const prog = (words[i] ?? '').split('/').pop() ?? ''
+  const args = words.slice(i + 1)
+  const grep = GREPS.has(prog)
+  const recursive =
+    ALWAYS_RECURSIVE.has(prog) ||
+    (grep && args.some(a => /^-[^-]*[rR]/.test(a) || /^--(?:dereference-)?recursive$/.test(a) || a === '--directories=recurse' || a === 'recurse'))
+  if (!recursive) return undefined
+  const plain = args.filter(a => !a.startsWith('-') && a !== 'recurse')
+  // The first plain word of a search is its pattern, unless -e/-f gave the pattern.
+  const searches = grep || ['rg', 'ag', 'ack', 'ugrep'].includes(prog)
+  const paths = searches && !args.some(a => PATTERN_FLAGS.test(a)) ? plain.slice(1) : plain
+  return paths.length > 0 ? paths : ['.']
+}
+
+/**
+ * Whether one of `targets`, run in every one of `cwds` (undefined: a folder not
+ * known), is a folder that holds credential folders. Unknown counts as one.
+ */
+export function targetsCredentialAncestor(targets: readonly string[], cwds: readonly (string | undefined)[]): boolean {
+  return targets.some(t =>
+    cwds.some(base => {
+      const abs = resolvePath(base, t)
+      return abs === undefined || isCredentialAncestor(abs)
+    }),
+  )
+}
+
+/** Whether any command of `command` has an argument that is not an option or an absolute path. */
+const relativeWords = (command: string): boolean =>
+  command
+    .replace(QUIET, ' ')
+    .split(/\|\||&&|[|;&\n]/)
+    .some(segment => segment.trim().split(/\s+/).slice(1).some(w => w !== '' && !w.startsWith('-') && !w.replace(/["']/g, '').startsWith('/')))
+
+/** A Bash command with a recursive reader over such a folder. */
+export const readsCredentialAncestor = (command: string, cwds: readonly (string | undefined)[]): boolean =>
+  command
+    .replace(QUIET, ' ')
+    .split(/\|\||&&|[|;&\n]/)
+    .some(segment => {
+      const targets = recursiveTargets(segment.trim().split(/\s+/).filter(Boolean))
+      return targets !== undefined && targetsCredentialAncestor(targets, cwds)
+    })
+
 export const isReadOnlyCommand = (command: string): boolean => {
   const line = command.replace(QUIET, ' ').trim()
   if (!line) return false
@@ -217,10 +302,26 @@ export const isReadOnlyCommand = (command: string): boolean => {
  * the task's turn ends, out of the guard's sight. `remote`: it runs where no hook of
  * this session sees its tools.
  */
-export type GuardedCall = { tool: string; command?: string; paths?: readonly string[]; background?: boolean; remote?: boolean }
+export type GuardedCall = {
+  tool: string
+  command?: string
+  paths?: readonly string[]
+  background?: boolean
+  remote?: boolean
+  /** Where the shell may be (undefined: not known). Peer tasks only; without it the folder counts as not known. */
+  cwds?: readonly (string | undefined)[]
+}
 
 const readsCredential = (call: GuardedCall): boolean =>
   (call.paths ?? []).some(isCredentialPath) || (call.tool === 'Bash' && namesCredentialPath(call.command ?? ''))
+
+// Peer tasks also refuse a recursive read whose root holds credential folders
+// (the Grep and Glob tools, grep -r, rg, find …). Call tasks keep their rules.
+const readsCredentialTree = (call: GuardedCall): boolean => {
+  const cwds = call.cwds ?? [undefined]
+  if (call.tool === 'Grep' || call.tool === 'Glob') return targetsCredentialAncestor(call.paths?.length ? call.paths : ['.'], cwds)
+  return call.tool === 'Bash' && readsCredentialAncestor(call.command ?? '', cwds)
+}
 
 const readsOnly = (call: GuardedCall): boolean => {
   if (call.background || call.remote) return false
@@ -233,10 +334,16 @@ const readsOnly = (call: GuardedCall): boolean => {
 /** The deny text for a tool call, or undefined when the call only reads. `from`: who gave the task. */
 export const readOnlyDenial = (call: GuardedCall, from: 'call' | 'peer' = 'call'): string | undefined => {
   if (from === 'peer') {
-    if (readsCredential(call)) {
+    if (readsCredential(call) || readsCredentialTree(call)) {
       return (
-        `${call.tool} was not run: this task came from another connected agent, and credential files (~/.ssh, ~/.aws, ~/.config/gcloud, ~/.config/talkif, ~/.claude, .env files, keys, .netrc, credentials.json) are never read during one. ` +
-        'Do not try another way to read it. Say which file you would check and why.'
+        `${call.tool} was not run: this task came from another connected agent, and credential files (~/.ssh, ~/.aws, ~/.config/gcloud, ~/.config/talkif, ~/.claude, .env files, keys, .netrc, credentials.json) are never read during one, nor searched through a folder that holds them (the home folder, ~/.config, /). ` +
+        'Do not try another way to read it. Search inside the project folder instead, or say which file you would check and why.'
+      )
+    }
+    if (readsOnly(call) && call.tool === 'Bash' && call.cwds?.includes(undefined) && relativeWords(call.command ?? '')) {
+      return (
+        `${call.tool} was not run: the shell of this session may be in another folder than the project (an earlier cd), so a relative path may name another file. ` +
+        'Run it again with absolute paths inside the project folder.'
       )
     }
     if (readsOnly(call)) return undefined

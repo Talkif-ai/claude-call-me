@@ -177,9 +177,6 @@ export function folderAllowed(cwd: string, folders: readonly string[]): boolean 
 
 /** A 401/403 from the backend, said so the user knows what to do; undefined for any other status. */
 export function refusalReason(status: number, text: string): Problem | undefined {
-  // Personal Agent answers (agent credential routes): the refusal names the fix.
-  const agent = agentRefusalReason(text)
-  if (agent) return agent
   if (status !== 401 && status !== 403) return undefined
   if (text.includes('connectors_consent_required')) {
     return { reason: 'Connectors are not turned on for your Talkif account', next: 'an owner or admin turns them on in the Talkif dashboard (Developer → Integrations)' }

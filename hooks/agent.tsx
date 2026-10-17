@@ -25,6 +25,7 @@ import {
   canonicalActionInput,
   displayName,
   effectiveMode,
+  isId,
   parseInbox,
   parseOwnerKeys,
   parseOwnerProof,
@@ -33,14 +34,15 @@ import {
   parseTask,
   pinVerdict,
   refusalOf,
+  revealHidden,
   sealMessage,
   verifyOwnerProof,
 } from './protocol'
 import type { A2AMessage, AgentStatus, Envelope, InboxItem, LocalCeiling, OwnerKey, Peer, PeerMode, PeerPin, Refusal, SelfInfo, TaskInfo } from './protocol'
 import { CallTaskScope, readOnlyDenial } from './read-only'
-import { actionHash, b64url, fingerprint, fromB64url, generateKeyPair, keyBlob, keysFromBlob, open, randomBytes, sessionAad, sessionProof, sha256Hex, toHex, uuidv7 } from './tap1'
+import { actionHash, agentFingerprint, b64url, fromB64url, generateKeyPair, keyBlob, keysFromBlob, open, randomBytes, sessionAad, sessionProof, sha256Hex, toHex, uuidv7 } from './tap1'
 import type { KeyPair } from './tap1'
-import { classify, needsOwnerProof, rank, terminalMayApprove } from './tiers'
+import { classify, needsOwnerProof, rank, shellCwdsAfter, terminalMayApprove } from './tiers'
 import type { Tier } from './tiers'
 import { fenceUntrusted, peerNote } from './untrusted'
 // One status line for the plugin: register.tsx composes it (this module's part included).
@@ -54,7 +56,10 @@ const cardActions = new Map<string, (button: string) => Promise<void>>()
 
 const TOOL_PREFIX = 'mcp__call-me__'
 const TOOLS = ['list_agents', 'ask_agent', 'tell_agent', 'delegate', 'task_status', 'check_inbox'] as const
-const PEER_MARK = /^\[peer-task:([0-9a-f-]{36})\]/
+// Found anywhere in the turn's text (a queued prompt can be merged after typed text):
+// a turn that carries any peer-task mark is covered, the run known or not (fail closed).
+const PEER_MARK = /\[peer-task:([0-9a-f-]{36})\]/
+const PEER_MARK_ANY = '[peer-task:'
 const POLL_WAIT_S = 20
 const REFUSED_RETRY_MS = 30_000
 const STANDBY_MS = 30_000
@@ -65,6 +70,8 @@ const RESULT_MAX = 1_400
 const ASK_WAIT_STEPS = 25
 const APPROVAL_INPUT_MAX = 8_192
 const KEEP_RECEIVED = 20
+const SEEN_MAX = 1_000
+const OUTGOING_RECHECK = 5
 
 /** Received from another agent: a message, or the result/status of a task this session gave. */
 type Received = { at: string; from: string; kind: 'message' | 'result' | 'status'; taskId: string | null; text: string; code?: Record<string, string> }
@@ -92,6 +99,7 @@ type Runtime = {
   keys: KeyPair | undefined
   sid: string | undefined
   proof: string | undefined
+  /** Keyed by validated agent id; a null-prototype object (no `__proto__` key can reach Object.prototype). */
   pins: Record<string, PeerPin>
   ownerKeys: OwnerKey[]
   peers: Peer[]
@@ -102,7 +110,13 @@ type Runtime = {
   problem: Problem | undefined
   stopped: boolean
   failures: number
+  /** Message ids handled in this session, oldest first, at most SEEN_MAX. */
   seen: Set<string>
+  /** Every folder the Bash tool's shell may be in (undefined: one not known); see tiers.ts. */
+  cwds: (string | undefined)[]
+  outgoingCheckedAt: number
+  /** Outgoing tasks seen completed once with no result yet. */
+  completedSeen: Set<string>
   received: Received[]
   waiters: Map<string, Received | undefined>
   outgoing: Set<string>
@@ -128,6 +142,7 @@ export function personalAgentStatus(): string | undefined {
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const noPins = (): Record<string, PeerPin> => Object.create(null)
 
 // ---- local files and the secret store ----
 
@@ -171,24 +186,32 @@ async function readPrivateJson($: EngineInterface, path: string): Promise<unknow
 
 const KEYCHAIN_SERVICE = 'talkif-agent'
 
+/** An agent id that names a file or a keychain entry here: a lowercase UUID only (the hub may be compromised). */
+function checkedId(agentId: string): string {
+  if (!isId(agentId)) throw new Error('Talkif sent an agent id that is not a UUID; refusing to use it')
+  return agentId
+}
+
 /** Both private keys, one hex blob: the macOS keychain, else a 0600 file. Never in argv, never in $.store. */
 export async function storePrivateKeys($: EngineInterface, dir: string, agentId: string, keys: KeyPair): Promise<void> {
   const blob = keyBlob(keys)
+  const account = checkedId(agentId)
   if ((await os($)) === 'Darwin') {
     // `security -i` reads the whole command from stdin: the secret is never in the process list.
-    const res = await run($, ['security', '-i'], `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${agentId} -w ${blob}\n`)
+    // Every word is a fixed name, a UUID or hex (checked above): nothing can add a command.
+    const res = await run($, ['security', '-i'], `add-generic-password -U -s "${KEYCHAIN_SERVICE}" -a "${account}" -w "${blob}"\n`)
     if (res.exitCode !== 0) throw new Error('could not store the agent key in the keychain')
     return
   }
-  await writePrivate($, `${dir}/${agentId}.key`, `${blob}\n`)
+  await writePrivate($, `${dir}/${account}.key`, `${blob}\n`)
 }
 
 export async function loadPrivateKeys($: EngineInterface, dir: string, agentId: string): Promise<KeyPair | undefined> {
   if ((await os($)) === 'Darwin') {
-    const res = await run($, ['security', 'find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', agentId, '-w'])
+    const res = await run($, ['security', 'find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', checkedId(agentId), '-w'])
     return res.exitCode === 0 ? keysFromBlob(res.stdout) : undefined
   }
-  const path = `${dir}/${agentId}.key`
+  const path = `${dir}/${checkedId(agentId)}.key`
   if (!(await $.fs.exists(path))) return undefined
   if (!(await isPrivate($, path))) throw new Error(`${path} is readable by others; refusing to use it`)
   return keysFromBlob(await $.fs.read(path))
@@ -246,10 +269,10 @@ function stopAll($: EngineInterface, refusal: Refusal) {
 
 // ---- connecting: who am I, my keys, my card, my session ----
 
-const bindingPath = (r: Runtime, agentId: string) => `${r.dir}/${agentId}.json`
-const peersPath = (r: Runtime, agentId: string) => `${r.dir}/${agentId}.peers.json`
-const ownerPath = (r: Runtime, agentId: string) => `${r.dir}/${agentId}.owner.json`
-const lockPath = (r: Runtime, agentId: string) => `${r.dir}/${agentId}.lock`
+const bindingPath = (r: Runtime, agentId: string) => `${r.dir}/${checkedId(agentId)}.json`
+const peersPath = (r: Runtime, agentId: string) => `${r.dir}/${checkedId(agentId)}.peers.json`
+const ownerPath = (r: Runtime, agentId: string) => `${r.dir}/${checkedId(agentId)}.owner.json`
+const lockPath = (r: Runtime, agentId: string) => `${r.dir}/${checkedId(agentId)}.lock`
 const idCacheKey = (key: string) => `agent:id:${sha256Hex(key).slice(0, 16)}`
 
 async function sessionRoot($: EngineInterface, cwd: string): Promise<string> {
@@ -284,10 +307,10 @@ async function machineId($: EngineInterface, r: Runtime): Promise<string> {
 
 async function loadPins($: EngineInterface, r: Runtime, agentId: string) {
   const saved = await readPrivateJson($, peersPath(r, agentId))
-  r.pins = {}
+  r.pins = noPins()
   if (isRecord(saved)) {
     for (const [id, p] of Object.entries(saved)) {
-      if (isRecord(p) && typeof p.boxPublic === 'string' && typeof p.signPublic === 'string') r.pins[id] = { boxPublic: p.boxPublic, signPublic: p.signPublic, name: displayName(p.name) }
+      if (isId(id) && isRecord(p) && typeof p.boxPublic === 'string' && typeof p.signPublic === 'string') r.pins[id] = { boxPublic: p.boxPublic, signPublic: p.signPublic, name: displayName(p.name) }
     }
   }
   const owner = await readPrivateJson($, ownerPath(r, agentId))
@@ -304,6 +327,10 @@ async function connect($: EngineInterface): Promise<boolean> {
     return false
   }
   const self = parseSelf(selfRes.body)
+  if (selfRes.ok && !self) {
+    setProblem($, { reason: "Talkif's answer about this agent is not valid (its id is not a UUID)", next: 'try again later; if it stays, report it to Talkif' })
+    return false
+  }
   if (!selfRes.ok || !self) throw new Error(`GET /self → ${selfRes.status}`)
   r.self = self
   r.agentId = self.agentId
@@ -312,6 +339,14 @@ async function connect($: EngineInterface): Promise<boolean> {
   await checkBinding($, r, self.agentId, true)
   if (r.bound !== 'yes') {
     r.note = `agent bound to ${r.boundRoot ?? 'another folder'}`
+    await refreshStatus($)
+    return false
+  }
+  // Another session on this machine already holds the agent: stand by before any
+  // key, card or session request (the first proven request would take Talkif's
+  // lease from the live session). No tools are registered in standby.
+  if (!(await holdLock($))) {
+    r.note = STANDBY_NOTE
     await refreshStatus($)
     return false
   }
@@ -483,6 +518,15 @@ async function ack($: EngineInterface, deliveryId: string) {
   await hub($, 'POST', `/inbox/${encodeURIComponent(deliveryId)}/ack`).catch(() => undefined)
 }
 
+function markSeen(r: Runtime, messageId: string) {
+  r.seen.add(messageId)
+  // Oldest first (insertion order): keep the newest SEEN_MAX. Deadlines cover what a restart forgets.
+  for (const old of r.seen) {
+    if (r.seen.size <= SEEN_MAX) break
+    r.seen.delete(old)
+  }
+}
+
 async function handleItem($: EngineInterface, item: InboxItem): Promise<void> {
   const r = rt
   if (!r?.keys || !r.agentId) return
@@ -493,13 +537,13 @@ async function handleItem($: EngineInterface, item: InboxItem): Promise<void> {
     await refreshPeers($, true)
     accepted = acceptItem(item, r.agentId, r.keys, r.pins)
   }
-  if (messageId) r.seen.add(messageId)
+  if (messageId) markSeen(r, messageId)
   if (accepted.type === 'unknown-peer' || accepted.type === 'drop') {
     $.ui.log(`call-me (Personal Agent): dropped an item (${accepted.type === 'drop' ? accepted.reason : 'unknown sender'})`)
     return ack($, item.deliveryId)
   }
   if (accepted.type === 'hub') {
-    await handleHubItem($, accepted.kind, accepted.hub)
+    await handleHubItem($, accepted.kind, accepted.hub, accepted.envelope.taskId)
     return ack($, item.deliveryId)
   }
   const { envelope, text, data, code } = accepted
@@ -509,28 +553,62 @@ async function handleItem($: EngineInterface, item: InboxItem): Promise<void> {
     await ack($, item.deliveryId)
     return startPeerTask($, envelope, text, data)
   }
+  // A result or status of a task: only from the agent the task went to, and only for
+  // a task this agent gave (the task row says; a pinned peer cannot speak for another task).
+  if (envelope.taskId) {
+    const task = await readTask($, envelope.taskId)
+    if (!task || task.fromAgentId !== r.agentId || task.toAgentId !== envelope.from) {
+      $.ui.log('call-me (Personal Agent): dropped an item (not from the agent that task went to)')
+      return ack($, item.deliveryId)
+    }
+  }
   const kind: Received['kind'] = envelope.kind === 'result' ? 'result' : envelope.kind === 'status' ? 'status' : 'message'
   const received: Received = { at: new Date().toISOString().slice(0, 16).replace('T', ' '), from, kind, taskId: envelope.taskId, text: text.slice(0, 4_000), code }
   if (envelope.taskId && r.waiters.has(envelope.taskId) && envelope.kind === 'result') r.waiters.set(envelope.taskId, received)
   else keepReceived(received)
-  if (envelope.taskId && envelope.kind === 'result') r.outgoing.delete(envelope.taskId)
+  if (envelope.taskId && envelope.kind === 'result') {
+    r.outgoing.delete(envelope.taskId)
+    r.completedSeen.delete(envelope.taskId)
+  }
   await ack($, item.deliveryId)
   await refreshStatus($)
 }
 
-async function handleHubItem($: EngineInterface, kind: string, data: Record<string, unknown>) {
+/** A task this session gave has ended without a result body (failed, rejected, expired, canceled): tell the waiter and the inbox. */
+function outgoingEnded(r: Runtime, task: TaskInfo) {
+  if (!r.outgoing.has(task.taskId) && !r.waiters.has(task.taskId)) return
+  r.outgoing.delete(task.taskId)
+  const ended: Received = { at: new Date().toISOString().slice(0, 16).replace('T', ' '), from: 'Talkif', kind: 'status', taskId: task.taskId, text: `The task ended: ${task.state}${task.refusal ? ` (${task.refusal})` : ''}.` }
+  if (r.waiters.has(task.taskId)) r.waiters.set(task.taskId, ended)
+  else keepReceived(ended)
+}
+
+/** Whether this session could carry out the task if it won the round: free, connected, and allowed to write when the task writes. */
+async function canTake($: EngineInterface, r: Runtime, taskId: string): Promise<boolean> {
+  if (r.runs.size > 0 || r.stopped || !r.sid || r.bound !== 'yes') return false
+  const task = await readTask($, taskId)
+  if (!task) return false
+  if (task.permission === 'local_write' && (r.peerCeiling === 'read-only' || !r.self || r.self.mode === 'read_only' || !r.self.localWriteGranted)) return false
+  return true
+}
+
+async function handleHubItem($: EngineInterface, kind: string, data: Record<string, unknown>, envelopeTaskId: string | null) {
   const r = rt
   if (!r) return
-  const taskId = typeof data.taskId === 'string' ? data.taskId : undefined
+  const taskId = typeof data.taskId === 'string' && isId(data.taskId) ? data.taskId : envelopeTaskId ?? undefined
   if (kind === 'task_canceled' && taskId) {
     const running = r.runs.get(taskId)
     if (running) running.canceled = true
     r.outgoing.delete(taskId)
     if (r.waiters.has(taskId)) r.waiters.set(taskId, { at: '', from: 'Talkif', kind: 'status', taskId, text: 'The task was canceled.' })
+  } else if (kind === 'status' && taskId) {
+    // Only a hint: the task row says what happened.
+    const task = await readTask($, taskId)
+    if (task && !OPEN_STATES.includes(task.state) && task.state !== 'completed') outgoingEnded(r, task)
   } else if (kind === 'bid_request' && taskId) {
-    // One bid per round: whether this session is free to take it.
-    const busy = r.runs.size > 0
-    await hub($, 'POST', `/tasks/${encodeURIComponent(taskId)}/bid`, { can: !busy && !r.stopped, confidence: busy ? 0 : 60 })
+    // One bid per round: whether this session is free to take it, and allowed to.
+    const can = await canTake($, r, taskId)
+    await hub($, 'POST', `/tasks/${encodeURIComponent(taskId)}/bid`, { can, confidence: can ? 60 : 0 })
   } else if (kind === 'file_request' && typeof data.ticketId === 'string') {
     // This plugin shares no files: the producer side refuses every ticket.
     await hub($, 'POST', `/files/tickets/${encodeURIComponent(data.ticketId)}/fail`, { refusal: 'file_unavailable' })
@@ -578,7 +656,10 @@ async function startPeerTask($: EngineInterface, envelope: Envelope, text: strin
   if (!r?.agentId || !envelope.taskId || r.stopped) return
   // Never trust the envelope: the hub's task row says who it is for, its state and what it granted.
   const task = await readTask($, envelope.taskId)
-  if (!task || task.toAgentId !== r.agentId || task.state !== 'submitted') return
+  // For this agent, still waiting, sent by the agent the row names, not past its deadline.
+  if (!task || task.toAgentId !== r.agentId || task.state !== 'submitted' || envelope.from !== task.fromAgentId) return
+  const deadline = Date.parse(task.deadlineAt)
+  if (!Number.isFinite(deadline) || deadline < Date.now()) return
   const selfRes = await hub($, 'GET', '/self')
   const self = parseSelf(selfRes.body) ?? r.self
   if (!self) return
@@ -657,7 +738,19 @@ const guardedCall = (e: ToolCallInput, input: Record<string, unknown>) => ({
   paths: [input.file_path, input.filePath, input.notebook_path, input.path].filter((p): p is string => typeof p === 'string'),
   background: input.run_in_background === true,
   remote: input.isolation === 'remote',
+  cwds: rt?.cwds ?? [undefined],
 })
+
+/**
+ * Every Bash call of the session moves where its shell may be (the Bash tool keeps
+ * its folder between calls): judged before the call, updated as if it ran.
+ */
+function trackShell(e: ToolCallInput) {
+  const r = rt
+  if (!r || e.tool !== 'Bash') return
+  const command = inputOf(e).command
+  r.cwds = shellCwdsAfter(typeof command === 'string' ? command : '', r.cwds, r.root)
+}
 
 /** The decision for one tool call inside a peer task: undefined lets it go on to Claude Code's own checks. */
 async function peerGuard($: EngineInterface, e: ToolCallInput, cwd: string): Promise<string | undefined> {
@@ -677,7 +770,7 @@ async function peerGuard($: EngineInterface, e: ToolCallInput, cwd: string): Pro
     }
   }
   if (runNow.mode === 'read_only') return readOnlyDenial(guardedCall(e, input), 'peer')
-  const tier = classify(e.tool, input, cwd)
+  const tier = classify(e.tool, input, cwd, r.cwds)
   if (tier === 'read') return undefined
   if (runNow.mode === 'auto' && tier === 'local_write') return undefined
   return requestApproval($, runNow, e.tool, input, cwd, tier)
@@ -708,15 +801,25 @@ async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string
   await postStatus($, task, 'input_required')
   r.approvals += 1
   await refreshStatus($)
-  const terminal = terminalMayApprove(finalTier) && !ownerProof
+  // Shown as it will run: every hidden character (bidi overrides, zero-width, controls,
+  // odd spaces) as \uXXXX. With any of them it cannot be approved here (§6.3).
+  const shownTool = revealHidden(tool)
+  const shownCwd = revealHidden(cwd)
+  const shownInput = revealHidden(canonical)
+  const hidden = shownTool.hidden || shownCwd.hidden || shownInput.hidden
+  const terminal = terminalMayApprove(finalTier) && !ownerProof && !hidden
   await showCard($, {
     id: `approval:${approvalId}`,
     title: `Approval needed: task from ${task.fromAgentName}`,
     lines: [
-      `${tool} wants to run in ${cwd} (${finalTier.replace('_', ' ')}).`,
-      terminal ? 'Approve or deny it here, or on the Talkif dashboard.' : 'Only your passkey can approve this: open the Talkif dashboard (Settings → Personal Agent). You can deny it here.',
+      `${shownTool.shown} wants to run in ${shownCwd.shown} (${finalTier.replace('_', ' ')}).`,
+      hidden
+        ? 'This action contains hidden characters (shown as \\uXXXX): what you see may not be what runs, so it cannot be approved. Deny it.'
+        : terminal
+          ? 'Approve or deny it here, or on the Talkif dashboard.'
+          : 'Only your passkey can approve this: open the Talkif dashboard (Settings → Personal Agent). You can deny it here.',
     ],
-    code: canonical,
+    code: shownInput.shown,
     buttons: terminal ? [{ key: 'approve', label: 'Approve once', primary: true }, { key: 'deny', label: 'Deny' }] : [{ key: 'deny', label: 'Deny', primary: true }],
   }, async button => {
     const decision = button === 'approve' && terminal ? { decision: 'approve', actionHash: hash } : { decision: 'deny' }
@@ -759,10 +862,21 @@ async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string
 
 // ---- sending: the tools this session uses ----
 
-function findPeer(name: string): Peer | undefined {
+/**
+ * The one peer `name` means: its exact id, its exact name (any case), else the one
+ * peer whose name starts with it. Empty, ambiguous or unknown: none (a body is
+ * never sealed to a guessed recipient).
+ */
+export function findPeer(name: string, peers: readonly Peer[] = rt?.peers ?? []): Peer | undefined {
   const want = name.trim().toLowerCase()
-  const peers = rt?.peers ?? []
-  return peers.find(p => p.agentId === want) ?? peers.find(p => p.name.toLowerCase() === want) ?? peers.find(p => p.name.toLowerCase().includes(want))
+  if (!want) return undefined
+  const byId = peers.find(p => p.agentId === want)
+  if (byId) return byId
+  const exact = peers.filter(p => p.name.toLowerCase() === want)
+  if (exact.length === 1) return exact[0]
+  if (exact.length > 1) return undefined
+  const prefix = peers.filter(p => p.name.toLowerCase().startsWith(want))
+  return prefix.length === 1 ? prefix[0] : undefined
 }
 
 /** Recipients with usable pinned keys; a changed key refuses (until /talkif agent trust). */
@@ -792,7 +906,12 @@ async function createTask($: EngineInterface, text: string, opts: { target?: Pee
   const r = rt
   if (!r?.keys || !r.agentId) return { ok: false, why: 'this session is not connected as a Talkif agent' }
   await refreshPeers($, false)
-  const caps = (opts.capabilities ?? []).map(c => c.toLowerCase()).filter(c => /^[a-z0-9][a-z0-9-]{0,31}$/.test(c))
+  const asked = (opts.capabilities ?? []).map(c => c.trim().toLowerCase())
+  const caps = asked.filter(c => /^[a-z0-9][a-z0-9-]{0,31}$/.test(c))
+  // Without a target the capabilities choose who gets a sealed copy: none (every
+  // agent, the phone agent too) or a dropped invalid one would widen that.
+  if (!opts.target && caps.length === 0) return { ok: false, why: 'name an agent, or the capabilities the task needs' }
+  if (caps.length !== asked.length) return { ok: false, why: `not a capability name: ${asked.filter(c => !caps.includes(c)).join(', ')}` }
   const candidates = opts.target ? [opts.target] : r.peers.filter(p => p.online && caps.every(c => p.capabilities.includes(c))).slice(0, 8)
   if (candidates.length === 0) return { ok: false, why: opts.target ? 'no such agent' : 'no online agent has those capabilities' }
   const recipients = recipientsOf(candidates)
@@ -809,10 +928,17 @@ async function createTask($: EngineInterface, text: string, opts: { target?: Pee
   if (!sealed) return { ok: false, why: "a recipient's key is unusable" }
   const res = await hub($, 'POST', '/tasks', { envelope: sealed.envelope, bodies: sealed.bodies })
   if (!res.ok || !isRecord(res.body)) return { ok: false, why: `Talkif refused the task (${res.refusal ?? res.status})` }
-  const id = typeof res.body.taskId === 'string' ? res.body.taskId : taskId
-  r.outgoing.add(id)
+  // The task id is ours and bound into every body: Talkif keeps it as the task's id.
+  // Another one means the recipient would see a task this session never waits on.
+  if (res.body.taskId !== undefined && res.body.taskId !== taskId) {
+    const other = typeof res.body.taskId === 'string' && isId(res.body.taskId) ? res.body.taskId : undefined
+    if (other) await hub($, 'POST', `/tasks/${encodeURIComponent(other)}/cancel`).catch(() => undefined)
+    await hub($, 'POST', `/tasks/${encodeURIComponent(taskId)}/cancel`).catch(() => undefined)
+    return { ok: false, why: 'Talkif answered with another task id than the one sent; the task was canceled' }
+  }
+  r.outgoing.add(taskId)
   await refreshStatus($)
-  return { ok: true, taskId: id }
+  return { ok: true, taskId }
 }
 
 const TOOL_SPECS: Record<(typeof TOOLS)[number], { description: string; inputSchema: Record<string, unknown> }> = {
@@ -875,7 +1001,8 @@ async function runTool($: EngineInterface, name: string, input: Record<string, u
     const recipients = recipientsOf([target])
     if (!recipients.ok || !r.keys) return { result: `Not sent: ${recipients.ok ? 'no keys' : recipients.why}.`, isError: true }
     const sealed = sealMessage(
-      { kind: 'message', from: r.agentId, to: { agents: [target.agentId] }, topics: [], requestId: null, taskId: null, parentTaskId: null, depth: 0, deadlineAt: new Date(Date.now() + 24 * 3_600_000).toISOString(), permission: 'read', notify: 'none' },
+      // A message is no hop of a task: depth 1, no request, task or parent (spec §4.4).
+      { kind: 'message', from: r.agentId, to: { agents: [target.agentId] }, topics: [], requestId: null, taskId: null, parentTaskId: null, depth: 1, deadlineAt: new Date(Date.now() + 24 * 3_600_000).toISOString(), permission: 'read', notify: 'none' },
       { parts: [{ kind: 'text', text: str(input.message) }] },
       recipients.list,
       r.keys,
@@ -889,6 +1016,7 @@ async function runTool($: EngineInterface, name: string, input: Record<string, u
     const text = str(ask ? input.question : input.task).trim()
     const target = str(input.agent) ? findPeer(str(input.agent)) : undefined
     if (!text || (ask && !target) || (str(input.agent) && !target)) return { result: `${name} needs ${ask ? 'a known agent and a question' : 'a task and a known agent (or capabilities)'}; see list_agents.`, isError: true }
+    if (Array.isArray(input.capabilities) && input.capabilities.some(c => typeof c !== 'string')) return { result: 'capabilities must be names (strings).', isError: true }
     const caps = Array.isArray(input.capabilities) ? input.capabilities.filter((c): c is string => typeof c === 'string') : undefined
     const made = await createTask($, text, { target, capabilities: caps, write: !ask && input.write === true, ask })
     if (!made.ok) return { result: `Not sent: ${made.why}.`, isError: true }
@@ -926,22 +1054,41 @@ function schedule($: EngineInterface, ms: number) {
   })
 }
 
-/** Whether another session on this machine holds the agent (a fresh lock that is not ours). */
-async function lockedElsewhere($: EngineInterface): Promise<boolean> {
+const STANDBY_NOTE = 'standby (another session on this machine holds this agent)'
+
+/**
+ * Take or keep this machine's lock on the agent: false when another session holds a
+ * fresh one. Not a secret (a session id and a time), so a plain file. A new lock is
+ * created with O_EXCL (`set -C`), so two sessions starting together cannot both take it.
+ */
+async function holdLock($: EngineInterface): Promise<boolean> {
   const r = rt
   if (!r?.agentId) return false
-  // Not a secret (a session id and a time): a plain file, no permission checks on every poll.
   const path = lockPath(r, r.agentId)
-  let saved: unknown
-  try {
-    saved = (await $.fs.exists(path)) ? JSON.parse(await $.fs.read(path)) : undefined
-  } catch {
-    saved = undefined
-  }
   const now = await $.clock.now()
-  if (isRecord(saved) && typeof saved.session === 'string' && saved.session !== r.sessionKey && typeof saved.at === 'number' && now - saved.at < LOCK_STALE_MS) return true
-  await $.fs.write(path, JSON.stringify({ session: r.sessionKey, at: now }))
-  return false
+  const mine = JSON.stringify({ session: r.sessionKey, at: now })
+  const heldBy = async (): Promise<'none' | 'me' | 'other' | 'stale'> => {
+    let saved: unknown
+    try {
+      saved = (await $.fs.exists(path)) ? JSON.parse(await $.fs.read(path)) : undefined
+    } catch {
+      saved = undefined
+    }
+    if (!isRecord(saved)) return (await $.fs.exists(path)) ? 'stale' : 'none'
+    if (saved.session === r.sessionKey) return 'me'
+    return typeof saved.at === 'number' && now - saved.at < LOCK_STALE_MS ? 'other' : 'stale'
+  }
+  const state = await heldBy()
+  if (state === 'other') return false
+  if (state === 'none') {
+    const made = await run($, ['sh', '-c', 'umask 077 && mkdir -p "$(dirname "$1")" && set -C && printf %s "$2" > "$1"', 'sh', path, mine])
+    // Another session created it first: it holds the agent.
+    if (made.exitCode !== 0) return (await heldBy()) !== 'other'
+    return true
+  }
+  // Ours (refresh) or stale (take over).
+  await $.fs.write(path, mine)
+  return true
 }
 
 const boundElsewhere = (r: Runtime): boolean => r.bound === 'elsewhere'
@@ -958,13 +1105,16 @@ async function poll($: EngineInterface): Promise<void> {
         return
       }
     }
-    if (await lockedElsewhere($)) {
-      r.note = 'standby (another session on this machine holds this agent)'
+    if (!(await holdLock($))) {
+      r.sid = undefined
+      r.proof = undefined
+      r.note = STANDBY_NOTE
       await refreshStatus($)
       schedule($, STANDBY_MS)
       return
     }
     void refreshPeers($, false).catch(() => undefined)
+    void recheckOutgoing($).catch(() => undefined)
     const res = await hub($, 'GET', `/inbox?wait=${POLL_WAIT_S}`)
     if (res.status === 204) {
       if (res.headers['x-talkif-poll'] === 'superseded') return standby($)
@@ -1000,6 +1150,25 @@ async function poll($: EngineInterface): Promise<void> {
     await refreshStatus($)
     schedule($, backoff)
   }
+}
+
+/** Now and then, re-read the tasks this session gave: one that ended with no result body still clears. */
+async function recheckOutgoing($: EngineInterface) {
+  const r = rt
+  if (!r || r.outgoing.size === 0 || Date.now() - r.outgoingCheckedAt < TASK_RECHECK_MS) return
+  r.outgoingCheckedAt = Date.now()
+  for (const taskId of [...r.outgoing].slice(0, OUTGOING_RECHECK)) {
+    const task = await readTask($, taskId)
+    if (!task || OPEN_STATES.includes(task.state)) continue
+    // Completed: its result body may still be on its way; give it one more round.
+    if (task.state === 'completed' && !r.completedSeen.has(taskId)) {
+      r.completedSeen.add(taskId)
+      continue
+    }
+    r.completedSeen.delete(taskId)
+    outgoingEnded(r, task)
+  }
+  await refreshStatus($)
 }
 
 async function standby($: EngineInterface) {
@@ -1053,8 +1222,8 @@ async function agentCommand($: EngineInterface, args: string): Promise<string> {
       id: `trust:${peer.agentId}`,
       title: `Trust the keys of ${peer.name}?`,
       lines: [
-        pin ? `Pinned on this machine: ${fingerprint(fromB64url(pin.boxPublic) ?? new Uint8Array())}` : 'Not pinned yet.',
-        `Served by Talkif now:     ${fingerprint(box)}`,
+        pin ? `Pinned on this machine: ${agentFingerprint(fromB64url(pin.boxPublic) ?? new Uint8Array(), fromB64url(pin.signPublic) ?? new Uint8Array())}` : 'Not pinned yet.',
+        `Served by Talkif now:     ${agentFingerprint(box, sign)}`,
         'Compare with the fingerprint in the Talkif dashboard (Settings → Personal Agent) before trusting.',
       ],
       buttons: [{ key: 'trust', label: 'Trust these keys', primary: true }, { key: 'cancel', label: 'Cancel' }],
@@ -1095,20 +1264,24 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
     const resolved = resolveAgentCredentials({ agentKey: agentKeyOption, apiUrl: apiUrlOption }, devFile)
     // No agent credential: Personal Agent stays entirely off.
     if (resolved === undefined) return
+    const root = await sessionRoot($, cwd)
+    // The Bash tool's shell starts in the session's folder (real path), unknown when outside the root.
+    const start = (await $.fs.stat(cwd, { resolve: true }).catch(() => undefined))?.realPath ?? cwd
+    const startCwd = start.replace(/\/+$/, '') || '/'
     rt = {
       creds: resolved.ok ? resolved.credentials : { key: AGENT_KEY_PREFIX, url: '', owner: undefined },
       peerCeiling: peerCeilingOption,
       voiceApprovals: voiceApprovalsOption,
       home,
       dir: `${home}/.config/talkif/agent`,
-      root: await sessionRoot($, cwd),
+      root,
       sessionKey: await $.session.id(),
       agentId: undefined,
       self: undefined,
       keys: undefined,
       sid: undefined,
       proof: undefined,
-      pins: {},
+      pins: noPins(),
       ownerKeys: [],
       peers: [],
       peersAt: 0,
@@ -1119,6 +1292,9 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
       stopped: false,
       failures: 0,
       seen: new Set(),
+      cwds: [startCwd === root || startCwd.startsWith(`${root}/`) ? startCwd : undefined],
+      outgoingCheckedAt: 0,
+      completedSeen: new Set(),
       received: [],
       waiters: new Map(),
       outgoing: new Set(),
@@ -1135,7 +1311,7 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
     // A session in another folder than the bound one never polls: decided from
     // local files when this machine has connected before.
     const known: unknown = await $.store.get(idCacheKey(resolved.credentials.key))
-    if (typeof known === 'string') {
+    if (isId(known)) {
       await checkBinding($, rt, known, false)
       if (rt.bound === 'elsewhere') {
         rt.note = `agent bound to ${rt.boundRoot ?? 'another folder'}`
@@ -1171,14 +1347,18 @@ export const inPeerTask = (agentId: string | undefined): boolean => rt !== undef
  * permission check. Never allows by itself: undefined goes on to the normal path.
  */
 export async function agentToolDenial($: EngineInterface, e: ToolCallInput): Promise<string | undefined> {
-  if (!rt || !peerScope.covers(e.agentId)) return undefined
-  return peerGuard($, e, rt.root)
+  if (!rt) return undefined
+  // A call refused here never runs, so it moves no shell; anything else may run.
+  const denial = peerScope.covers(e.agentId) ? await peerGuard($, e, rt.root) : undefined
+  if (denial === undefined) trackShell(e)
+  return denial
 }
 
 /** The same judged from e alone (a re-entry, a failure): read-only inside a peer task. */
 export function agentToolDenialFallback(e: ToolCallInput): string | undefined {
-  if (!inPeerTask(e.agentId)) return undefined
-  return readOnlyDenial(guardedCall(e, inputOf(e)), 'peer') ?? undefined
+  const denial = inPeerTask(e.agentId) ? readOnlyDenial(guardedCall(e, inputOf(e)), 'peer') : undefined
+  if (denial === undefined) trackShell(e)
+  return denial
 }
 
 export const peerSpawnStarted = (parentAgentId: string | undefined): boolean => rt !== undefined && peerScope.spawnStarted(parentAgentId)
@@ -1187,11 +1367,12 @@ export const peerSpawnSettled = (covered: boolean, agentId: string | undefined):
 export async function agentTurnStart($: EngineInterface, e: { text: string; turnId: string; agentId?: string }): Promise<void> {
   if (e.agentId || !rt) return
   const mark = PEER_MARK.exec(e.text)
-  if (!mark) {
+  if (!mark && !e.text.includes(PEER_MARK_ANY)) {
     if (e.text.trim()) peerScope.endTurn()
     return
   }
   peerScope.startTurn(e.turnId)
+  if (!mark) return // a mark without a usable id: covered, read-only (orphan)
   const runNow = mark[1] ? rt.runs.get(mark[1]) : undefined
   if (!runNow) return // a reload lost the run: the turn stays covered, read-only (orphan)
   runNow.turnId = e.turnId

@@ -187,6 +187,9 @@ export function open(ciphertext: unknown, privateKey: Uint8Array, messageId: str
 export const bodySigText = (envHash: string, recipientAgentId: string, ct: Uint8Array): string =>
   `tap/1-sig\n${envHash}\n${recipientAgentId}\n${sha256Hex(ct)}`
 
+/** What a file chunk's producer signs: the chunk's whole AAD and its ciphertext (vector `chunks.items[].sigInput`). */
+export const chunkSigText = (chunkAad: string, ct: Uint8Array): string => `tap/1-chunk-sig\n${chunkAad}\n${sha256Hex(ct)}`
+
 export const signText = (text: string, signPrivate: Uint8Array): string => b64url(ed25519.sign(utf8(text), signPrivate))
 
 export function verifyText(text: string, signature: string, signPublic: Uint8Array): boolean {
@@ -218,8 +221,11 @@ export function keysFromBlob(blob: string): KeyPair | undefined {
   return { boxPrivate, boxPublic: x25519.getPublicKey(boxPrivate), signPrivate, signPublic: ed25519.getPublicKey(signPrivate) }
 }
 
-/** A public key's fingerprint as people compare it: first 16 hex of sha256, in groups of four. */
-export const fingerprint = (publicKey: Uint8Array): string => (sha256Hex(publicKey).slice(0, 16).match(/.{4}/g) ?? []).join(' ')
+/** Bytes' fingerprint as people compare it: first 16 hex of sha256, in groups of four. */
+export const fingerprint = (bytes: Uint8Array): string => (sha256Hex(bytes).slice(0, 16).match(/.{4}/g) ?? []).join(' ')
+
+/** An agent's key fingerprint, as the dashboard shows it: over its X25519 public key, then its Ed25519 public key (vector `keyFingerprint`). */
+export const agentFingerprint = (boxPublic: Uint8Array, signPublic: Uint8Array): string => fingerprint(concat(boxPublic, signPublic))
 
 // ---- proof of possession: the session nonce only our private key opens ----
 

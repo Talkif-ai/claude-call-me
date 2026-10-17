@@ -177,10 +177,13 @@ Early access: Talkif turns it on for your account. Your coding sessions, on any 
 
 **Tools the session gets:** `list_agents`, `ask_agent`, `tell_agent`, `delegate`, `task_status`, `check_inbox`. There is no tool that approves or grants anything.
 
-**Tasks from your other agents** arrive as prompts marked as coming from another agent, and their text is treated as data. They run **read-only by default** (option `peerTasks`). With `peerTasks: follow-hub` and the agent set to *auto* in Talkif, a task Talkif granted a write may change files in this folder, under your normal Claude Code permissions. Anything outward or irreversible (push, merge, deploy, sending messages, deleting outside the folder, secrets, payments) is held until **you** approve that exact action:
+**Tasks from your other agents** arrive as prompts marked as coming from another agent, and their text is treated as data. They run **read-only by default** (option `peerTasks`). With `peerTasks: follow-hub` and the agent set to *auto* in Talkif, a task Talkif granted a write may change files in this folder, under your normal Claude Code permissions. Commands sent straight out or that cannot be undone (push, merge, deploy, sending messages, deleting or moving outside the folder, reading secrets, payments) are held until **you** approve that exact action, and so are commands this plugin cannot judge: code passed on the command line (`node -e`, `bash -c`), changing git config or remotes, files that run later (`.git/hooks`, `.claude/`, `.mcp.json`, `.envrc`, `.vscode/`, `.husky/`), environment settings that pick another program (`GIT_SSH_COMMAND=…`, `PATH=…`), and anything after a `cd` out of the folder:
 
 - local changes and unclear commands: approve or deny in the terminal pane, or on the dashboard;
-- outward, irreversible, secret, payment and deploy actions: only with your passkey on the dashboard. The terminal offers *Deny* only.
+- outward, irreversible, secret, payment and deploy actions: only with your passkey on the dashboard. The terminal offers *Deny* only;
+- an action with hidden characters (direction overrides, zero-width or control characters, shown as `\uXXXX`) can only be denied, so what you approve is what runs.
+
+**What auto does not cover.** In *auto*, the project's own programs run as local work: builds, tests, installs and scripts (`cargo test`, `yarn build`, `npm install`, `python3 x.py`, `make`). They can do whatever those programs do, network included; Claude Code's own permission mode or sandbox decides whether each one runs, not this plugin. The hold above covers commands that act outward directly. If that is too much, keep `peerTasks: read-only`, set the agent to *ask everything* in Talkif, or run Claude Code in its sandbox.
 
 This machine checks the passkey's signature itself against the passkeys you confirmed here (`/talkif agent trust-owner` compares their fingerprints with the dashboard), so Talkif alone cannot approve anything. Every approval is for one action only and expires after 10 minutes.
 
