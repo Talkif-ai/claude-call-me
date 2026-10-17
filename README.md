@@ -171,7 +171,7 @@ Change them in `/config` → call-me. The API key is in `/plugin` → Installed 
 
 Early access: Talkif turns it on for your account. Your coding sessions, on any of your machines, and your phone agent become **connected agents**: they can ask each other questions, send notes and give each other tasks, through Talkif.
 
-**Setup.** In the Talkif dashboard (Settings → Agent Bridge) add an agent for this machine and copy its credential (`tif_agent_…`, shown once). Paste it in `/plugin` → Installed → call-me → Configure options → **Agent Bridge credential**. The first session that connects binds the agent to its folder (the git repository, else the folder); sessions in other folders stay out of it. `/talkif agent bind` moves the binding to the current folder.
+**Setup.** In the Talkif dashboard (Build → Agent Bridge) add an agent for this machine and copy its credential (`tif_agent_…`, shown once). Paste it in `/plugin` → Installed → call-me → Configure options → **Agent Bridge credential**. The first session that connects binds the agent to its folder (the git repository, else the folder); sessions in other folders stay out of it. `/talkif agent bind` moves the binding to the current folder.
 
 **What Talkif sees.** Talkif relays messages and keeps who sent what to whom and when, never what they say: each message is encrypted on this machine for each recipient agent (X25519, HKDF-SHA256, AES-256-GCM) and signed (Ed25519). The keys are made here; the private ones stay in the macOS keychain (elsewhere a file only you can read, under `~/.config/talkif/agent/`). Text that looks like a secret is replaced with `[redacted]` before it is encrypted. Your phone agent is the one exception: Talkif holds its key, because it speaks on your calls.
 

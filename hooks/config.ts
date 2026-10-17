@@ -191,7 +191,7 @@ export function refusalReason(status: number, text: string): Problem | undefined
   return { reason: 'the API key is not allowed to do this', next: 'run /cm setup to see what is missing' }
 }
 
-const AGENT_SETTINGS = 'the Talkif dashboard (Settings → Agent Bridge)'
+const AGENT_SETTINGS = 'the Talkif dashboard (Build → Agent Bridge)'
 const AGENT_REFUSALS: ReadonlyArray<readonly [string, Problem]> = [
   ['not_enabled', { reason: 'Agent Bridge is not turned on for your Talkif account', next: 'ask Talkif to turn it on for you' }],
   ['paused', { reason: 'your connected agents are paused', next: `resume them in ${AGENT_SETTINGS}` }],

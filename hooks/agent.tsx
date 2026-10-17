@@ -327,7 +327,7 @@ async function connect($: EngineInterface): Promise<boolean> {
   const selfRes = await hub($, 'GET', '/self')
   if (selfRes.status === 401 || selfRes.status === 403) {
     if (selfRes.refusal && STOPPING.includes(selfRes.refusal)) stopAll($, selfRes.refusal)
-    else setProblem($, agentRefusalReason(selfRes.text) ?? { reason: 'Talkif refused the Agent Bridge credential', next: 'create a new credential in the Talkif dashboard (Settings → Agent Bridge)' })
+    else setProblem($, agentRefusalReason(selfRes.text) ?? { reason: 'Talkif refused the Agent Bridge credential', next: 'create a new credential in the Talkif dashboard (Build → Agent Bridge)' })
     return false
   }
   const self = parseSelf(selfRes.body)
@@ -367,7 +367,7 @@ async function connect($: EngineInterface): Promise<boolean> {
   } else {
     r.keys = await loadPrivateKeys($, r.dir, self.agentId)
     if (!r.keys) {
-      setProblem($, { reason: 'this agent has keys on Talkif but this machine has no private key for it', next: 'rotate the credential in the Talkif dashboard (Settings → Agent Bridge) and paste the new one' })
+      setProblem($, { reason: 'this agent has keys on Talkif but this machine has no private key for it', next: 'rotate the credential in the Talkif dashboard (Build → Agent Bridge) and paste the new one' })
       return false
     }
   }
@@ -475,7 +475,7 @@ async function pinOwnerKeys($: EngineInterface, asked: boolean): Promise<string>
     title: 'Confirm your passkeys',
     lines: [
       'Outward actions a connected agent wants to run here (push, deploy, messages, secrets) need your passkey.',
-      'Check that these fingerprints match Settings → Agent Bridge in the Talkif dashboard:',
+      'Check that these fingerprints match Build → Agent Bridge in the Talkif dashboard:',
       ...fresh.map(k => `  ${k.fingerprint}  (${k.alg})`),
     ],
     buttons: [{ key: 'confirm', label: 'They match', primary: true }, { key: 'cancel', label: 'Not now' }],
@@ -824,7 +824,7 @@ async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string
         ? 'This action contains hidden characters (shown as \\uXXXX): what you see may not be what runs, so it cannot be approved. Deny it.'
         : terminal
           ? 'Approve or deny it here, or on the Talkif dashboard.'
-          : 'Only your passkey can approve this: open the Talkif dashboard (Settings → Agent Bridge). You can deny it here.',
+          : 'Only your passkey can approve this: open the Talkif dashboard (Build → Agent Bridge). You can deny it here.',
     ],
     code: shownInput.shown,
     buttons: terminal ? [{ key: 'approve', label: 'Approve once', primary: true }, { key: 'deny', label: 'Deny' }] : [{ key: 'deny', label: 'Deny', primary: true }],
@@ -1233,7 +1233,7 @@ async function agentCommand($: EngineInterface, args: string): Promise<string> {
       lines: [
         pin ? `Pinned on this machine: ${agentFingerprint(fromB64url(pin.boxPublic) ?? new Uint8Array(), fromB64url(pin.signPublic) ?? new Uint8Array())}` : 'Not pinned yet.',
         `Served by Talkif now:     ${agentFingerprint(box, sign)}`,
-        'Compare with the fingerprint in the Talkif dashboard (Settings → Agent Bridge) before trusting.',
+        'Compare with the fingerprint in the Talkif dashboard (Build → Agent Bridge) before trusting.',
       ],
       buttons: [{ key: 'trust', label: 'Trust these keys', primary: true }, { key: 'cancel', label: 'Cancel' }],
     }, async button => {
