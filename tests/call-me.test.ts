@@ -225,7 +225,7 @@ test('setup: refused probes name the missing scope; the report leads with the fi
   expect(setupReport([{ name: 'API key', ok: true, detail: 'x' }])).toMatch(/All set/)
 })
 
-import { CM_HELP, UNKNOWN_COMMAND, accountLabel, accountNameOf, accountsText, cmLines, statusText } from '../hooks/config'
+import { UNKNOWN_COMMAND, cmHelp, accountLabel, accountNameOf, accountsText, cmLines, statusText } from '../hooks/config'
 import type { CallMeState } from '../hooks/config'
 
 const state = (over: Partial<CallMeState>): CallMeState => ({ problem: undefined, off: undefined, onCall: false, registered: ['Acme'], flowName: 'Interviewer', ...over })
@@ -285,21 +285,26 @@ test('/cm is two or three lines: on, off, connecting or not set up', async () =>
   }
 })
 
-test('/cm help: one aligned line per command, the common ones first', async () => {
-  const lines = CM_HELP.split('\n')
+test('/cm help: aligned two columns on a wide terminal, the common ones first', async () => {
+  const lines = cmHelp(120).split('\n')
   expect(lines[0]).toBe('Commands')
-  expect(lines[1]?.trim().startsWith('/cm ')).toBe(true)
   expect(lines[1]).toContain('is this session reachable?')
   expect(lines.indexOf('Advanced')).toBeGreaterThan(lines.findIndex(l => l.trim().startsWith('/cm traffic')))
   const rows = lines.filter(l => l.trim().startsWith('/cm'))
-  const starts = new Set(rows.map(l => l.length - l.trimStart().length))
-  expect(starts.size).toBe(1)
-  const descriptionColumns = new Set(rows.map(l => l.indexOf(l.trim().split(/ {2,}/u)[1] ?? '')))
-  expect(descriptionColumns.size).toBe(1)
+  expect(new Set(rows.map(l => l.length - l.trimStart().length)).size).toBe(1)
+  expect(new Set(rows.map(l => l.indexOf(l.trim().split(/ {2,}/u)[1] ?? ''))).size).toBe(1)
   for (const cmd of ['/cm on | off', '/cm on all | off all', '/cm default on | off', '/cm setup', '/cm traffic', '/cm publish', '/cm latency']) {
     expect(rows.some(l => l.trim().startsWith(`${cmd}  `))).toBe(true)
   }
   expect(UNKNOWN_COMMAND).toBe('Unknown command. See /cm help.')
+})
+
+test('/cm help: stacked on a narrow terminal, no line wider than the pane', async () => {
+  const lines = cmHelp(40).split('\n')
+  expect(lines[1]).toBe('  /cm')
+  expect(lines[2]).toBe('      is this session reachable?')
+  expect(Math.max(...lines.map(l => l.length))).toBeLessThanOrEqual(48)
+  expect(lines.every(l => !/\/cm\S*.* {2,}\S/u.test(l))).toBe(true)
 })
 
 import { CallTaskScope } from '../hooks/read-only'
@@ -469,7 +474,7 @@ test('/cm help, switches and unknown commands answer in a line or a short list',
   world.consent = true
   await startSession($)
   await clock.settle()
-  expect(await cm($, 'help')).toBe(CM_HELP)
+  expect(await cm($, 'help')).toBe(cmHelp(100))
   expect(await cm($, 'frobnicate')).toBe('Unknown command. See /cm help.')
   expect(await cm($, 'on everything now')).toBe('Unknown command. See /cm help.')
   expect(await cm($, 'off')).toBe('☎ Off. Turn it on with /cm on.\nMore: /cm help')

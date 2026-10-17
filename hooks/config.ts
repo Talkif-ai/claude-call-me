@@ -341,23 +341,32 @@ export function cmLines(state: CallMeState): string {
   return [`${head} This session can be reached through ${accountsText(state.registered)}.`, call, MORE].join('\n')
 }
 
-/** /cm help: one plain line per command, the common ones first, descriptions in one column. */
+/** /cm help: the common commands first; two columns when the terminal is wide enough, else stacked. */
 const HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
   ['/cm', 'is this session reachable?'],
-  ['/cm on | off', 'make this session reachable / not reachable'],
-  ['/cm on all | off all', 'all open sessions on / off'],
+  ['/cm on | off', 'make this session reachable or not'],
+  ['/cm on all | off all', 'all open sessions on or off'],
   ['/cm default on | off', 'how new sessions start'],
-  ['/cm setup', "check the connection and show what's missing"],
-  ['/cm traffic', 'see what went back and forth (needs the debug option)'],
+  ['/cm setup', "check the connection, show what's missing"],
+  ['/cm traffic', 'what went back and forth (debug option)'],
 ]
 const HELP_ADVANCED: ReadonlyArray<readonly [string, string]> = [
-  ['/cm publish', "write the call prompt into your flow's Connectors node"],
+  ['/cm publish', "write the call prompt into your flow"],
   ['/cm latency', 'time a spoken answer'],
 ]
-const HELP_WIDTH = Math.max(...[...HELP_ROWS, ...HELP_ADVANCED].map(([cmd]) => cmd.length)) + 2
-const helpRow = ([cmd, text]: readonly [string, string]): string => `  ${cmd.padEnd(HELP_WIDTH)}${text}`
+const HELP_ALL = [...HELP_ROWS, ...HELP_ADVANCED]
+const HELP_WIDTH = Math.max(...HELP_ALL.map(([cmd]) => cmd.length)) + 2
+/** Cells the transcript takes before command output starts (the "⎿" gutter plus padding). */
+const HELP_GUTTER = 6
+const HELP_WIDE = 2 + HELP_WIDTH + Math.max(...HELP_ALL.map(([, text]) => text.length)) + HELP_GUTTER
 
-export const CM_HELP = ['Commands', ...HELP_ROWS.map(helpRow), '', 'Advanced', ...HELP_ADVANCED.map(helpRow)].join('\n')
+const wideRow = ([cmd, text]: readonly [string, string]): string => `  ${cmd.padEnd(HELP_WIDTH)}${text}`
+const stackedRow = ([cmd, text]: readonly [string, string]): string => `  ${cmd}\n      ${text}`
+
+export function cmHelp(columns: number): string {
+  const row = columns >= HELP_WIDE ? wideRow : stackedRow
+  return ['Commands', ...HELP_ROWS.map(row), '', 'Advanced', ...HELP_ADVANCED.map(row)].join('\n')
+}
 
 export const UNKNOWN_COMMAND = 'Unknown command. See /cm help.'
 

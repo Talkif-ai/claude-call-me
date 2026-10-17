@@ -11,7 +11,7 @@ import {
   FLOW_STEP,
   KEY_STEP,
   NO_FLOW_PROBLEM,
-  CM_HELP,
+  cmHelp,
   UNKNOWN_COMMAND,
   accountLabel,
   accountNameOf,
@@ -41,7 +41,7 @@ import type { CallMeState, Check, Credentials, FlowRef, Problem } from './config
 const TOOL = 'call_me'
 // Sent as the User-Agent on every request to the backend and the bridge. Kept equal
 // to .claude-plugin/plugin.json's version: bump both together.
-export const VERSION = '0.25.1'
+export const VERSION = '0.25.2'
 const USER_AGENT = `talkif-call-me/${VERSION}`
 // Debug pane: this session's bridge traffic, newest last (`/cm traffic`; recorded only with the debug option).
 const TRAFFIC_PANE = 'call-me-traffic'
@@ -1064,12 +1064,12 @@ async function cmStatus($: EngineInterface): Promise<string> {
   return cmLines(state)
 }
 
-async function cmRun($: EngineInterface, args: string): Promise<string> {
+async function cmRun($: EngineInterface, args: string, columns: number): Promise<string> {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
   const [a, b, extra] = words
   if (extra) return UNKNOWN_COMMAND
   if (!a || (a === 'status' && !b)) return cmStatus($)
-  if (a === 'help' && !b) return CM_HELP
+  if (a === 'help' && !b) return cmHelp(columns)
   if (a === 'setup' && !b) return cmSetup($)
   if (a === 'traffic' && !b) {
     if (!debugMode) return 'Traffic is recorded only with the debug option: turn on "Debug traffic pane" in /plugin → call-me → Configure options.'
@@ -1453,7 +1453,7 @@ export const register: Register = (on, options) => {
     }
   }).catch(() => ({ result: 'call_me failed inside the mod.', isError: true }))
 
-  on('command.run', { command: 'cm' }, async ($, e) => ({ text: await cmRun($, e.args) }))
+  on('command.run', { command: 'cm' }, async ($, e) => ({ text: await cmRun($, e.args, e.presentation.columns) }))
 
 
   on('ui.render', { component: 'Pane', requestId: TRAFFIC_PANE }, async ($, e) => {

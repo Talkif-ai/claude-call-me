@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.25.2 — 2026-10-17
+
+- `/cm help` fits narrow terminals: when the two columns don't fit, each description goes on its own line under the command. Shorter descriptions.
+
 ## 0.25.1 — 2026-10-17
 
 - `/cm help` lists the commands in two aligned columns.
