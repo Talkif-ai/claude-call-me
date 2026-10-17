@@ -55,6 +55,7 @@
     "file_unavailable",
     "cannot_revoke_phone",
     "no_personal_account",
-    "not_personal_call"
+    "not_personal_call",
+    "hidden_characters"
   ]
 }

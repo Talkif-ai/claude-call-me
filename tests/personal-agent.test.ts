@@ -23,7 +23,9 @@ import {
   verifyOwnerProof,
 } from '../hooks/protocol'
 import type { InboxItem, Peer, PeerPin } from '../hooks/protocol'
-import { classify, shellCwdsAfter } from '../hooks/tiers'
+import { classify, classifyAction, shellCwdsAfter } from '../hooks/tiers'
+import { OwnSecrets, scrub } from '../hooks/scrub'
+import { TIERS_JSON, SECRETS_JSON } from '../hooks/shared-tables'
 import { findPeer } from '../hooks/agent'
 import { redactSecrets } from '../hooks/secrets'
 import { fenceUntrusted } from '../hooks/untrusted'
@@ -150,13 +152,9 @@ test('tap1: base64url and keys round-trip; a non-canonical base64url spelling is
   expect(T.uuidv7()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 })
 
-// Codes this plugin already knows that the shared list does not have yet (added to
-// the talkif-agents generator next); once it has them, the union is the same list.
-const PENDING_UPSTREAM_REFUSALS = ['hidden_characters']
-
 test('closed lists equal the shared refusals.json and kinds.json', async () => {
   const shared = (vectorFile('refusals.json') as { refusals: string[] }).refusals
-  expect([...REFUSALS].sort()).toEqual([...new Set([...shared, ...PENDING_UPSTREAM_REFUSALS])].sort())
+  expect([...REFUSALS].sort()).toEqual([...shared].sort())
   const kinds = vectorFile('kinds.json') as { agent: Array<{ kind: string }>; hub: string[] }
   expect(kinds.agent.map(k => k.kind)).toEqual([...CLIENT_KINDS])
   expect([...kinds.hub].sort()).toEqual([...HUB_SENDABLE].sort())
@@ -176,10 +174,39 @@ test('hidden characters: shown as \\uXXXX exactly as hidden.json says, and flagg
   }
 })
 
-test('tiers: every shared case in tiers.json', async () => {
-  const v = vectorFile('tiers.json') as { cases: Array<{ tool: string; input: unknown; cwd: string; tier: string }> }
-  expect(v.cases.length > 40).toBe(true)
-  for (const c of v.cases) expect(`${c.tool} ${JSON.stringify(c.input)} → ${classify(c.tool, c.input, c.cwd)}`).toBe(`${c.tool} ${JSON.stringify(c.input)} → ${c.tier}`)
+test('vectors: every shared file matches SHA256SUMS, and the hooks classify and scrub by the same bytes', async () => {
+  const sums = (VECTOR_FILES['SHA256SUMS'] ?? '').trim().split('\n')
+  expect(sums.length).toBe(6)
+  for (const line of sums) {
+    const [sum, name] = line.split(/\s+/)
+    expect(`${name} ${T.sha256Hex(VECTOR_FILES[name ?? ''] ?? '')}`).toBe(`${name} ${sum}`)
+  }
+  expect(Object.keys(VECTOR_FILES).sort()).toEqual(['SHA256SUMS', ...sums.map(l => l.split(/\s+/)[1] ?? '')].sort())
+  expect(TIERS_JSON).toBe(VECTOR_FILES['tiers.json'] ?? '')
+  expect(SECRETS_JSON).toBe(VECTOR_FILES['secrets.json'] ?? '')
+})
+
+test('tiers: every shared case in tiers.json, tier and channels', async () => {
+  type Ch = { terminalApprove: boolean; voiceApprove: boolean; needsOwnerProof: boolean }
+  const v = vectorFile('tiers.json') as { v: number; cases: Array<{ tool: string; input: unknown; cwd: string; tier: string; channels: Ch }> }
+  expect(v.v).toBe(2)
+  expect(v.cases.length > 150).toBe(true)
+  for (const c of v.cases) {
+    const got = classifyAction(c.tool, c.input, c.cwd)
+    const ch = (x: Ch) => `${x.terminalApprove}/${x.voiceApprove}/${x.needsOwnerProof}`
+    expect(`${c.tool} ${JSON.stringify(c.input)} → ${got.tier} ${ch(got.channels)}`).toBe(`${c.tool} ${JSON.stringify(c.input)} → ${c.tier} ${ch(c.channels)}`)
+  }
+})
+
+test('secrets: every shared case in secrets.json, patterns and own values', async () => {
+  const v = vectorFile('secrets.json') as { cases: Array<{ text: string; out: string }>; own: { credential: string; keyHex: string; cases: Array<{ text: string; out: string; contains: boolean }> } }
+  expect(v.cases.length > 10).toBe(true)
+  for (const c of v.cases) expect(scrub(c.text)).toBe(c.out)
+  const own = new OwnSecrets({ credential: v.own.credential, keys: [T.fromHex(v.own.keyHex) ?? new Uint8Array()] })
+  for (const c of v.own.cases) {
+    expect(scrub(c.text, own)).toBe(c.out)
+    expect(`${c.text} ${own.contains(c.text)}`).toBe(`${c.text} ${c.contains}`)
+  }
 })
 
 // ---- scrubbing and fencing ----
@@ -981,7 +1008,8 @@ test("the shell's folder: after a cd out of the project, a peer task's relative 
   await peerTurn($, f, clock, hub, peerKeys, release)
   const rm = await $.tool.call({ tool: 'Bash', command: 'rm -rf Documents' })
   expect(denied(rm)).toMatch(/denied/)
-  expect(hub.approvals[0]).toMatchObject({ tier: 'irreversible', input: { command: 'rm -rf Documents' } })
+  // A folder not known ranks it unsure, with the delete's owner proof kept (no terminal approve).
+  expect(hub.approvals[0]).toMatchObject({ tier: 'unsure', input: { command: 'rm -rf Documents' } })
   // Starting the command in the project folder makes it local again.
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'cd /home/test/repo && rm -rf build' }))).toBe('ran Bash')
 })
@@ -1003,7 +1031,10 @@ test('tiers: relative paths judged from every folder the shell may be in', async
   expect(at('rm -rf build', ['/repo', '/repo/web'])).toBe('local_write')
   expect(at('rm -rf ../build', ['/repo/web'])).toBe('local_write')
   expect(at('rm -rf ../build', ['/repo', '/repo/web'])).toBe('irreversible')
-  expect(at('rm -rf build', [undefined])).toBe('irreversible')
+  expect(at('rm -rf build', [undefined])).toBe('unsure')
+  // unsure from the folder, irreversible from the delete: owner proof, never a terminal yes (as the table merges them).
+  expect(classifyAction('Bash', { command: 'rm -rf build' }, '/repo', [undefined]).channels).toEqual({ terminalApprove: false, voiceApprove: false, needsOwnerProof: true })
+  expect(classifyAction('Bash', { command: 'cargo test' }, '/repo', [undefined]).channels).toEqual({ terminalApprove: true, voiceApprove: false, needsOwnerProof: false })
   expect(at('cargo test', [undefined])).toBe('unsure')
   expect(at('cat notes.md', [undefined])).toBe('unsure')
   expect(at('cd /repo && rm -rf build', [undefined])).toBe('local_write')

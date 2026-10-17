@@ -13,6 +13,8 @@
 - Tasks Talkif ends without a result (failed, rejected, expired) leave the status line; old or misaddressed task bodies are dropped; a write task is not bid on when this machine would run it read-only.
 - The agent binds to one folder: sessions in other folders do not act as it.
 - Credential files now include `~/.claude` and `~/.claude.json` (Claude Code's own settings), also for tasks from a call. `tif_agent_` credentials are redacted like other keys.
+- **One permission table everywhere:** a task's actions are now ranked by the shared Talkif Agent Protocol table (`test-vectors/tiers.json` v2), the same bytes and the same steps the hub and the other clients use, and which approval may answer them (here, by voice, or only with your passkey) comes from that table too. Changes from 0.26.0's own rules: the Agent tool and unknown tools are always asked; a background Bash command is ranked like the same command in the foreground; while the shell may be in a folder not known (after an approved `cd` out of the project), every command is asked until one starts with `cd <project path> &&`.
+- Secret-looking text in messages to other agents and in approvals is redacted by the shared `secrets.json` patterns (also URL passwords, Stripe, Google and npm keys, JSON and YAML key fields), and this agent's own credential and private keys are removed by exact value. The Connectors bridge keeps its redaction unchanged.
 - **Fix:** the asker's name (`callerName`) now reaches the question and task prompts; 0.24.0 read it but dropped it on the way.
 - **License:** Apache License 2.0 from this release, with a NOTICE file (Talkif Agent Protocol, by Talkif). Releases up to 0.25.2 stay under the MIT License.
 

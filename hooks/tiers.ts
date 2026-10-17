@@ -1,383 +1,382 @@
-// The tier of one tool call a peer task wants to run: what it could do, from
-// reading only to deploying to production. Deterministic, no engine calls; the
-// same cases (test-vectors/tiers.json) are checked by every client and by the
-// hub, which reclassifies each approval and keeps the stricter tier.
+// The tier of one tool call a peer task wants to run, and the approval channels it
+// allows, by the shared permission table (test-vectors/tiers.json v2, copied byte for
+// byte from talkif-agents and mirrored into shared-tables.ts). The same table and the
+// same algorithm run in every client and in the hub, which reclassifies each approval
+// and keeps the stricter result. The algorithm text is the table's `algorithm`; this
+// file is its implementation, and every `cases` row is a test.
 //
-// Rank, stricter is higher: read(0) < local_write(1) < outward(2) <
-// irreversible(3) < unsure(4) < secret(5) < money(6) < prod_deploy(7).
-// Every rule that matches raises the tier; the highest wins. Anything this file
-// does not know is `unsure` (asked, never run on its own).
-//
-// `local_write` means "changes inside the folder, judged by Claude Code's own
-// permission mode or sandbox". It includes running the project's own programs
-// (builds, tests, installs), which can do anything those programs do: the floor
-// here covers direct outward commands, not what a build script does.
+// One thing the table cannot see is where an earlier Bash call left the shell (the
+// Bash tool keeps its folder between calls). `shellCwdsAfter` tracks that set and
+// `classify` starts the table's folder walk from it, as the spec's "shell's folder"
+// rule asks; that is only ever stricter than the table alone, which starts at the root.
 
-import { isCredentialAncestor, isCredentialPath, namesCredentialPath, readOnlyDenial, recursiveTargets, resolvePath, targetsCredentialAncestor } from './read-only'
+import { TIERS_JSON } from './shared-tables'
+import { canonicalJson } from './tap1'
 
 export const TIERS = ['read', 'local_write', 'outward', 'irreversible', 'unsure', 'secret', 'money', 'prod_deploy'] as const
 export type Tier = (typeof TIERS)[number]
 
-export const rank = (t: Tier): number => TIERS.indexOf(t)
-export const stricter = (a: Tier, b: Tier): Tier => (rank(a) >= rank(b) ? a : b)
+export type Channels = { terminalApprove: boolean; voiceApprove: boolean; needsOwnerProof: boolean }
 
-/** Tiers whose approval needs the owner's passkey (owner proof), never a terminal yes. */
-export const needsOwnerProof = (t: Tier): boolean => rank(t) >= rank('outward') && t !== 'unsure'
-/** Tiers a terminal answer (the plugin's own prompt) may approve. */
-export const terminalMayApprove = (t: Tier): boolean => t === 'local_write' || t === 'unsure'
+type RuleOn = 'tool' | 'command' | 'segment' | 'rawSegment' | 'path' | 'input' | 'outside' | 'redirect' | 'searchRoot' | 'assignment'
+type Rule = { id: string; tier: Tier; on: RuleOn; pattern: string; target?: string; unless?: string; tools?: string; ci?: boolean }
+
+type TierTable = {
+  v: number
+  rank: Record<Tier, number>
+  channels: Record<Tier, Channels>
+  readTools: string[]
+  writeTools: string[]
+  pathFields: string[]
+  prefixWords: string[]
+  prefixPairs: string[]
+  shells: string[]
+  readers: { commands: string[]; git: string[]; gh: string[] }
+  rules: Rule[]
+}
+
+type Compiled = Rule & { re: RegExp; unlessRe?: RegExp; toolsRe?: RegExp; targetRe?: RegExp }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
-const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+export const isTier = (v: unknown): v is Tier => typeof v === 'string' && (TIERS as readonly string[]).includes(v)
 
-// Tools that only read, or only touch the session's own task list (as read-only.ts).
-const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'LSP', 'NotebookRead', 'ToolSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'])
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
-
-const MONEY_NAME = /stripe|payment|charge|invoice|refund/i
-const OUTWARD_NAME = /send|post|publish/i
-const SQL_TOOL = /sql|postgres|mysql|sqlite|database|\bdb\b|_db_|db_/i
-
-// Paths under the person's home that hold their agents' and tools' own secrets.
-const HOME_SECRET = /^(?:~|\/(?:Users|home)\/[^/]+|\/root)\/(?:\.claude(?:\/|$)|\.claude\.json$|\.config\/talkif(?:\/|$))/
-
-// Files inside a repo that make something run later, outside this task's sight:
-// git hooks and config, editor tasks, direnv, hook managers, agent settings and
-// MCP servers. Changing one is never ordinary local work.
-const RUNS_LATER = /(?:^|\/)(?:\.git(?:\/|$)|\.claude(?:\/|$)|\.mcp\.json$|\.envrc$|\.vscode(?:\/|$)|\.idea(?:\/|$)|\.husky(?:\/|$)|\.gemini(?:\/|$)|\.codex(?:\/|$)|\.cursor(?:\/|$)|\.gitmodules$|\.pre-commit-config\.ya?ml$)/
-// As strict as a secret (the shared table's v2 says so too): anything in .git, an
-// agent's own settings (permission rules, hooks), MCP servers, direnv, editor and
-// agent config folders.
-const AGENT_SETTINGS = /(?:^|\/)(?:\.git(?:\/|$)|\.claude\/settings[^/]*$|\.mcp\.json$|\.envrc$|\.vscode(?:\/|$)|\.gemini(?:\/|$)|\.codex(?:\/|$)|\.cursor(?:\/|$))/
-
-/** Whether `path` (as written, relative to `root`) stays inside `root`, root itself excluded. */
-export function insideRoot(path: string, root: string): boolean {
-  const base = root.replace(/\/+$/, '')
-  const p = path.replace(/["']/g, '')
-  if (!p || p.startsWith('~') || /[*?[{]/.test(p)) return false
-  const abs = p.startsWith('/') ? p : `${base}/${p}`
-  const parts: string[] = []
-  for (const part of abs.split('/')) {
-    if (part === '' || part === '.') continue
-    if (part === '..') {
-      if (parts.length === 0) return false
-      parts.pop()
-    } else parts.push(part)
-  }
-  const resolved = `/${parts.join('/')}`
-  return resolved.startsWith(`${base}/`) && resolved !== base
+let cachedTable: TierTable | undefined
+const table = (): TierTable => {
+  if (cachedTable) return cachedTable
+  // The generated mirror of tiers.json; its shape is the file's, checked by the vector tests.
+  const parsed = JSON.parse(TIERS_JSON) as TierTable
+  if (parsed.v !== 2) throw new Error(`tiers.json v${String(parsed.v)} is not the version this plugin implements (2)`)
+  cachedTable = parsed
+  return parsed
 }
 
-const pathIsSecret = (path: string): boolean => isCredentialPath(path) || HOME_SECRET.test(path.replace(/["']/g, ''))
-
-// ---- where the shell runs ----
-// A relative path means a different file in another folder. The shell's folder is
-// the session root unless a `cd` moved it: earlier in the same command line, or in
-// an earlier Bash call (the Bash tool keeps its folder between calls). `cwds` is
-// every folder the shell may be in; undefined means one this file cannot know.
-
-export type Cwds = readonly (string | undefined)[]
-const MAX_CWDS = 8
-
-const within = (abs: string, root: string): boolean => abs === root || abs.startsWith(`${root}/`)
-
-/** Every folder of `cwds`, or undefined for one outside `root` or not known. */
-const keepInside = (cwds: Cwds, root: string): (string | undefined)[] => cwds.map(c => (c !== undefined && within(c, root) ? c : undefined))
-
-const union = (a: Cwds, b: Cwds): (string | undefined)[] => {
-  const out = [...new Set([...a, ...b])]
-  return out.length > MAX_CWDS ? [undefined] : out
-}
-
-/** Whether `path` names something inside `root` (root itself excluded) from every folder in `cwds`. */
-const insideFrom = (path: string, cwds: Cwds, root: string): boolean =>
-  !/[*?[{]/.test(path) &&
-  cwds.every(base => {
-    const abs = resolvePath(base, path)
-    return abs !== undefined && !abs.startsWith('~') && within(abs, root) && abs !== root
+let compiledRules: Compiled[] | undefined
+const rules = (): Compiled[] => {
+  compiledRules ??= table().rules.map(r => {
+    const flags = r.ci ? 'i' : ''
+    return {
+      ...r,
+      re: new RegExp(r.pattern, flags),
+      ...(r.unless ? { unlessRe: new RegExp(r.unless, flags) } : {}),
+      ...(r.tools ? { toolsRe: new RegExp(r.tools, flags) } : {}),
+      ...(r.target ? { targetRe: new RegExp(r.target, flags) } : {}),
+    }
   })
-
-const CD = new Set(['cd', 'pushd', 'popd', 'chdir'])
-
-/** The folders a `cd`-like segment leaves the shell in: unknown for `cd`, `cd -`, `cd ~`, `popd`. */
-function cdTargets(ws: readonly string[], cwds: Cwds, root: string): (string | undefined)[] {
-  const prog = ws[0] ?? ''
-  const target = ws.slice(1).find(w => !w.startsWith('-') || w === '-')
-  if (prog === 'popd' || target === undefined || target === '-') return [undefined]
-  return keepInside(cwds.map(base => resolvePath(base, target)).map(abs => (abs?.startsWith('~') ? undefined : abs)), root)
+  return compiledRules
 }
 
-/** Where the shell may be after `command` ran, given where it may have been (the Bash tool keeps its folder). */
-export function shellCwdsAfter(command: string, cwds: Cwds, root: string): (string | undefined)[] {
-  const line = command.replace(QUIET, ' ').trim()
-  // A subshell, substitution or escape: the parts are not the whole story.
-  if (UNSAFE.test(line)) return /\bcd\b|\bpushd\b|\bpopd\b/.test(line) ? union(cwds, [undefined]) : [...cwds]
-  const parts = line.split(/(\|\||&&|[|;\n&])/)
-  let now: (string | undefined)[] = [...cwds]
-  for (let i = 0; i < parts.length; i += 2) {
-    const ws = words(parts[i] ?? '')
-    if (!CD.has(ws[0] ?? '')) continue
-    // The command may stop before this cd, or the cd may fail: both folders stay possible.
-    now = union(now, cdTargets(ws, now, root))
+export const rank = (t: Tier): number => table().rank[t]
+export const stricter = (a: Tier, b: Tier): Tier => (rank(a) >= rank(b) ? a : b)
+export const channelsOf = (t: Tier): Channels => table().channels[t]
+
+/** Channels over every tier that applied (read left out unless it is the only one). */
+export const mergeChannels = (tiers: readonly Tier[]): Channels => {
+  const set = [...new Set(tiers)]
+  const counted = set.length > 1 ? set.filter(t => t !== 'read') : set
+  const ch = counted.map(channelsOf)
+  return {
+    terminalApprove: ch.every(c => c.terminalApprove),
+    voiceApprove: ch.every(c => c.voiceApprove),
+    needsOwnerProof: ch.some(c => c.needsOwnerProof),
   }
-  return union(cwds, now)
 }
 
-// ---- Bash ----
+// ---- the table's text functions ----
 
-const UNSAFE = /[<>`()$\\\r]/
-const QUIET = /\s2>(?:&1|\/dev\/null)(?=\s|$)/g
+const QUIET = /(\s)2>(&1|\/dev\/null)(\s|$)/g
+const quiet = (command: string): string => {
+  let out = command
+  for (;;) {
+    const next = out.replace(QUIET, '$1$3')
+    if (next === out) return out
+    out = next
+  }
+}
 
-const words = (segment: string): string[] => segment.trim().split(/\s+/).filter(Boolean)
+const splitSegments = (command: string): string[] =>
+  command
+    .split(/&&|\|\||[;|&()`{}\n]/)
+    .map(s => s.trim())
+    .filter(Boolean)
 
-const WRAPPERS = ['sudo', 'command', 'nohup', 'time', 'exec']
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
-const leadingCount = (ws: readonly string[]): number => {
-  // Leading VAR=value assignments and `sudo`/`command`/`nohup`/`time`/`exec` wrappers.
+const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=\S*$/
+const SHELL_C = /^-[A-Za-z]*c$/
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+const MAX_LISTS = 64
+
+const shellWords = (s: string): string[] =>
+  s
+    .split(/\s+/)
+    .map(w => w.replace(/["'\\]/g, ''))
+    .filter(Boolean)
+
+const basename = (w: string): string => {
+  const b = w.slice(w.lastIndexOf('/') + 1)
+  return b === '' ? w : b
+}
+
+const dropAssignments = (words: string[]): string[] => {
   let i = 0
-  while (i < ws.length && (ASSIGNMENT.test(ws[i] ?? '') || WRAPPERS.includes(ws[i] ?? ''))) i++
-  return i
-}
-const programOf = (ws: readonly string[]): string => (ws[leadingCount(ws)] ?? '').split('/').pop() ?? ''
-const argsOf = (ws: readonly string[]): string[] => ws.slice(leadingCount(ws) + 1)
-
-// Environment names that only change output or logging. Any other name set in front
-// of a command (GIT_SSH_COMMAND, LD_PRELOAD, NODE_OPTIONS, PATH, PAGER, …) can make
-// the command run another program, so it is unsure.
-const HARMLESS_ENV = /^(?:RUST_LOG|RUST_BACKTRACE|NODE_ENV|CI|DEBUG|LOG_LEVEL|TZ|LANG|LC_[A-Z]+|NO_COLOR|FORCE_COLOR|TERM|COLUMNS|PYTHONUNBUFFERED|PYTHONDONTWRITEBYTECODE)=/
-const riskyAssignment = (w: string): boolean => ASSIGNMENT.test(w) && !HARMLESS_ENV.test(w)
-
-const INTERPRETERS = new Set(['node', 'python', 'python3', 'ruby', 'perl', 'deno', 'bun', 'osascript', 'php', 'lua', 'Rscript'])
-const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh'])
-const EVAL_FLAG = /^(?:-e|-p|-c|-E|-r|--eval|--print|--command|eval)$/
-
-const AWS_MUTATING = /^(?:create|delete|put|update|modify|terminate|run|start|stop|attach|detach|associate|disassociate|deregister|register|remove|add|set|tag|untag|reboot|restore|invoke|publish|send|deploy|import|copy|reset|enable|disable|revoke|authorize|replace|rotate|cancel|apply|execute|purchase|release|allocate|accept|reject)(?:-|$)/
-const S3_MUTATING = new Set(['cp', 'mv', 'rm', 'sync', 'rb', 'mb', 'presign'])
-
-// Programs that build, test, format or edit inside the working tree.
-const LOCAL_PROGRAMS = new Set([
-  'cd', 'pushd', 'export', 'unset', 'cargo', 'rustc', 'rustfmt', 'make', 'cmake', 'ninja', 'just', 'yarn', 'pnpm', 'npm', 'bun', 'node', 'tsc', 'tsx', 'deno',
-  'python', 'python3', 'pip', 'pip3', 'uv', 'poetry', 'pytest', 'ruff', 'black', 'mypy', 'isort', 'go', 'gofmt', 'swift', 'xcodebuild',
-  'gradle', 'mvn', 'javac', 'java', 'dotnet', 'mix', 'elixir', 'ruby', 'bundle', 'rake', 'rspec', 'prettier', 'eslint', 'biome', 'jest', 'vitest',
-  'mkdir', 'touch', 'cp', 'mv', 'rm', 'ln', 'sed', 'awk', 'sort', 'uniq', 'tr', 'cut', 'echo', 'printf', 'true', 'false', 'test', 'diff',
-  'find', 'xxd', 'jq', 'yq', 'tar', 'gzip', 'gunzip', 'zip', 'unzip', 'chmod', 'date', 'basename', 'dirname', 'realpath', 'which', 'tee',
-  'cat', 'head', 'tail', 'grep', 'rg', 'ls', 'pwd', 'wc', 'file', 'stat', 'du', 'df', 'tree', 'sleep', 'claude',
-])
-const WRITERS = new Set(['cp', 'ln', 'touch', 'mkdir', 'chmod', 'chown', 'tee', 'sed', 'tar', 'unzip', 'install', 'truncate', 'dd'])
-// Git subcommands that only change the working tree, the index or local refs. Not
-// here (so unsure): config (core.fsmonitor, core.sshCommand, aliases run programs,
-// --global writes outside the repo), submodule (foreach runs commands), worktree
-// and init (write outside the repo), and anything not listed.
-const GIT_LOCAL = new Set(['status', 'log', 'diff', 'show', 'add', 'commit', 'checkout', 'switch', 'restore', 'stash', 'rebase', 'cherry-pick', 'tag', 'branch', 'mv', 'rm', 'fetch', 'pull', 'blame', 'grep', 'rev-parse', 'ls-files', 'describe', 'reflog', 'apply', 'am', 'format-patch', 'notes', 'remote', 'reset', 'clean'])
-// Git options that run a program or write a file outside the tree.
-const GIT_RUNS = /^(?:--output(?:=.*)?|--ext-diff|--upload-pack(?:=.*)?|--receive-pack(?:=.*)?|--exec-path(?:=.*)?|--config-env(?:=.*)?|--template(?:=.*)?)$/
-const GIT_REMOTE_READ = new Set(['-v', '--verbose', 'show', 'get-url'])
-// Options of ordinary tools that run a program of the caller's choice.
-const RUNS_PROGRAM: Readonly<Record<string, RegExp>> = {
-  sort: /^--compress-program(?:=.*)?$/,
-  tar: /^(?:-I.*|-[a-zA-Z]*I|-F.*|--use-compress-program(?:=.*)?|--to-command(?:=.*)?|--checkpoint-action(?:=.*)?|--info-script(?:=.*)?|--new-volume-script(?:=.*)?|-H|--rmt-command(?:=.*)?|--rsh-command(?:=.*)?)$/,
-  zip: /^(?:-TT.*|--unzip-command(?:=.*)?)$/,
-  rsync: /^(?:-e.*|-[a-zA-Z]*e|--rsh(?:=.*)?|--rsync-path(?:=.*)?)$/,
-  find: /^-(?:exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/,
-}
-// sed's `e` command or flag runs a shell command; `w`/`W` writes a file.
-const SED_RUNS = /(?:^|[;{}\s])[ewW](?:\s|$)|\/[gpIiMm0-9]*[ewW][gpIiMm0-9]*(?:\s|$)/
-// Options that run the command in another folder, for the programs that take one.
-const DIR_FLAGS = new Set(['-C', '--directory', '--cwd', '--prefix', '--manifest-path', '--dir', '--project-dir', '--chdir'])
-const DIR_PROGRAMS = new Set(['make', 'cargo', 'npm', 'yarn', 'pnpm', 'bun', 'tar', 'just', 'ninja', 'cmake', 'go', 'uv', 'poetry', 'pip', 'pip3', 'mvn', 'gradle', 'dotnet', 'swift', 'xcodebuild', 'deno', 'unzip', 'zip'])
-
-function segmentTier(segment: string, root: string, cwds: Cwds): Tier {
-  const ws = words(segment)
-  const prog = programOf(ws)
-  const args = argsOf(ws)
-  const joined = args.join(' ')
-  if (!prog) return 'read'
-  let tier: Tier = 'read'
-  const raise = (t: Tier) => {
-    tier = stricter(tier, t)
-  }
-  const known = cwds.every(c => c !== undefined)
-
-  // prod_deploy
-  if (prog === 'kubectl' || prog === 'argocd' || prog === 'kubectx' || prog === 'eksctl') raise('prod_deploy')
-  if (prog === 'terraform' || prog === 'tofu') {
-    const sub = args.find(a => !a.startsWith('-'))
-    if (sub === undefined || !['fmt', 'validate', 'plan'].includes(sub)) raise('prod_deploy')
-  }
-  if (prog === 'helm' && args.some(a => ['install', 'upgrade', 'uninstall', 'rollback', 'delete'].includes(a))) raise('prod_deploy')
-  if (prog === 'gh' && args[0] === 'workflow' && (args[1] === 'run' || args[1] === 'dispatch' || args[1] === 'enable')) raise('prod_deploy')
-  if (/deploy|promote|rollback/i.test(prog)) raise('prod_deploy')
-  if (['make', 'just', 'yarn', 'pnpm', 'npm', 'bun', 'npx'].includes(prog) && args.some(a => /deploy|promote|rollback/i.test(a))) raise('prod_deploy')
-  if (prog === 'gh' && args[0] === 'workflow' && /deploy|promote|rollback/i.test(joined)) raise('prod_deploy')
-  if (prog === 'aws') {
-    const positional = args.filter(a => !a.startsWith('-'))
-    const [service, op] = positional
-    if (service === 's3' ? op !== undefined && S3_MUTATING.has(op) : op !== undefined && AWS_MUTATING.test(op)) raise('prod_deploy')
-    else if (op === undefined) raise('unsure')
-  }
-
-  // money
-  if (prog === 'stripe') raise('money')
-  if ((prog === 'curl' || prog === 'wget') && /api\.stripe\.com/i.test(joined)) raise('money')
-
-  // secret
-  if (prog === 'security' && args.some(a => /^(?:find-generic-password|find-internet-password|dump-keychain|export|dump-trust-settings)$/.test(a))) raise('secret')
-  if (prog === 'printenv' || (prog === 'env' && args.every(a => a.startsWith('-'))) || (prog === 'set' && args.length === 0) || prog === 'export' && args.length === 0) raise('secret')
-  if (/\/proc\/[^\s/]*\/environ/.test(segment)) raise('secret')
-  if (prog === 'gh' && args[0] === 'auth' && args[1] === 'token') raise('secret')
-  if (prog === 'git' && args[0] === 'credential') raise('secret')
-  if (namesCredentialPath(segment) || ws.some(w => w.split(/[=:]/).some(pathIsSecret))) raise('secret')
-  // A recursive reader over the home folder, ~/.config or / reads the credential folders in it.
-  const targets = recursiveTargets(ws)
-  if (targets !== undefined && targetsCredentialAncestor(targets, cwds)) raise('secret')
-
-  // outward
-  if (prog === 'git' && (args[0] === 'push' || args[0] === 'merge' || args[0] === 'send-email' || args[0] === 'request-pull')) raise('outward')
-  if (prog === 'gh' && ((args[0] === 'pr' && ['merge', 'create', 'close', 'comment', 'review', 'edit', 'ready'].includes(args[1] ?? '')) || args[0] === 'release' || (args[0] === 'issue' && ['create', 'close', 'comment', 'edit', 'delete'].includes(args[1] ?? '')) || args[0] === 'api' || args[0] === 'repo' && ['create', 'delete', 'edit', 'fork', 'rename', 'archive'].includes(args[1] ?? ''))) raise('outward')
-  if (['npm', 'yarn', 'pnpm', 'bun', 'cargo', 'twine', 'gem', 'poetry'].includes(prog) && args.includes('publish')) raise('outward')
-  if (prog === 'ssh' || prog === 'scp' || prog === 'sftp' || prog === 'ftp' || prog === 'telnet' || prog === 'nc' || prog === 'ncat') raise('outward')
-  if (prog === 'rsync' && args.some(a => !a.startsWith('-') && /^[^/]*:/.test(a))) raise('outward')
-  if (prog === 'curl' || prog === 'wget') {
-    const sends = args.some(a => /^(?:-d|--data.*|-F|--form.*|-T|--upload-file|--json|--post-data|--post-file|-X|--request|--method)(?:=|$)/.test(a) || /^-[a-zA-Z]*[dFTX]/.test(a))
-    const nonGet = /(?:-X|--request|--method)\s*=?\s*(?!GET\b)\S+/i.test(joined)
-    raise(sends || nonGet ? 'outward' : 'unsure')
-  }
-  if (prog === 'docker' && ['push', 'login'].includes(args[0] ?? '')) raise('outward')
-
-  // irreversible: deleting or moving anything not provably inside the folder, from
-  // every folder the shell may be in.
-  if (prog === 'rm' || prog === 'mv' || prog === 'rmdir' || prog === 'shred' || prog === 'unlink') {
-    const paths = args.filter(a => !a.startsWith('-'))
-    if (paths.length === 0 || paths.some(p => !insideFrom(p, cwds, root))) raise('irreversible')
-  }
-  if (prog === 'git' && args[0] === 'reset' && args.includes('--hard')) raise('irreversible')
-  if (prog === 'git' && args[0] === 'clean' && args.some(a => /^-[a-zA-Z]*f/.test(a) || a === '--force')) raise('irreversible')
-  if (prog === 'git' && args[0] === 'branch' && args.some(a => a === '-D' || (a.startsWith('-') && a.includes('D')) || a === '--delete' && args.includes('--force'))) raise('irreversible')
-  if (prog === 'git' && args[0] === 'push' && args.some(a => a === '--force' || a === '-f' || a.startsWith('--force-with-lease'))) raise('irreversible')
-  if (/\b(?:DROP|TRUNCATE)\b/i.test(segment) && ['psql', 'mysql', 'sqlite3', 'sqlx', 'mongosh', 'redis-cli'].includes(prog)) raise('irreversible')
-  if (prog === 'redis-cli' && /\bFLUSH(?:ALL|DB)\b/i.test(joined)) raise('irreversible')
-
-  // unsure: code from the command line, shells, wrappers that run other commands
-  if (INTERPRETERS.has(prog) && args.some(a => EVAL_FLAG.test(a))) raise('unsure')
-  if (SHELLS.has(prog)) raise('unsure')
-  if (prog === 'eval' || prog === 'source' || prog === '.' || prog === 'xargs' || prog === 'env' && args.some(a => !a.startsWith('-')) || prog === 'parallel' || prog === 'watch') raise('unsure')
-  // An environment that can make the command run another program (GIT_SSH_COMMAND, LD_PRELOAD, PATH, …).
-  if (ws.slice(0, leadingCount(ws)).some(riskyAssignment)) raise('unsure')
-  if (['export', 'declare', 'typeset', 'alias', 'setopt'].includes(prog) && args.some(a => a === '-f' || riskyAssignment(a) || !ASSIGNMENT.test(a))) raise('unsure')
-  // Options that run a program of the caller's choice.
-  const runs = RUNS_PROGRAM[prog]
-  if (runs && args.some(a => runs.test(a))) raise('unsure')
-  if ((prog === 'sed' || prog === 'gsed') && args.some(a => !a.startsWith('-') && SED_RUNS.test(a.replace(/["']/g, '')))) raise('unsure')
-  if (prog === 'git') {
-    if (args.some(a => GIT_RUNS.test(a))) raise('unsure')
-    if (args[0] === 'rebase' && args.some(a => a === '-x' || a.startsWith('--exec'))) raise('unsure')
-    if (args[0] === 'grep' && args.some(a => /^-O/.test(a) || a.startsWith('--open-files-in-pager'))) raise('unsure')
-    // A changed remote makes a later, approved `git push origin` go somewhere else: as outward as the push.
-    if (args[0] === 'remote' && (args[1] === 'add' || args[1] === 'set-url')) raise('outward')
-    else if (args[0] === 'remote' && args[1] !== undefined && !GIT_REMOTE_READ.has(args[1])) raise('unsure')
-    // git config can set hooks, the ssh program, aliases, remotes: approved with the passkey only.
-    if (args[0] === 'config') raise('secret')
-  }
-  // Another folder than this one.
-  args.forEach((a, i) => {
-    const eq = a.indexOf('=')
-    const flag = eq > 0 ? a.slice(0, eq) : a
-    const value = eq > 0 ? a.slice(eq + 1) : args[i + 1]
-    if (DIR_PROGRAMS.has(prog) && DIR_FLAGS.has(flag) && value !== undefined && !cwds.every(base => {
-      const abs = resolvePath(base, value)
-      return abs !== undefined && within(abs, root)
-    })) raise('unsure')
-  })
-
-  // Programs that write files: a path outside the working tree makes it unsure.
-  if (WRITERS.has(prog) && args.some(a => !a.startsWith('-') && (a.startsWith('/') || a.startsWith('~') || a.includes('..') || !known) && !insideFrom(a, cwds, root))) raise('unsure')
-
-  // local work and reading
-  if (tier === 'read') {
-    if (prog === 'git') {
-      const sub = args.find(a => !a.startsWith('-'))
-      if (args[0]?.startsWith('-')) raise('unsure') // `git -c …` can run a configured program
-      else if (sub === undefined || !GIT_LOCAL.has(sub)) raise('unsure')
-      else if (readOnlyDenial({ tool: 'Bash', command: segment }) !== undefined) raise('local_write')
-    } else if (readOnlyDenial({ tool: 'Bash', command: segment }) === undefined) {
-      // a plain reader
-    } else if (LOCAL_PROGRAMS.has(prog)) raise('local_write')
-    else raise('unsure')
-  }
-  if (tier !== 'read' && rank(tier) < rank('unsure')) {
-    // Changing a file that runs later (git hooks and config, agent settings, editor tasks).
-    const named = ws.flatMap(w => [w, ...w.split(/[=:]/)]).map(w => w.replace(/["']/g, ''))
-    if (named.some(w => AGENT_SETTINGS.test(w))) raise('secret')
-    else if (named.some(w => RUNS_LATER.test(w))) raise('unsure')
-  }
-  // Local work in a folder that may be outside this one is not local work, nor
-  // work in a folder whose files run later (`cd .git/hooks && cp x pre-commit`).
-  // (`now()`: `raise` changes `tier` inside a closure, which narrowing does not follow.)
-  const now = (): Tier => tier
-  if (now() === 'local_write' && (!known || cwds.some(c => c !== undefined && RUNS_LATER.test(c.slice(root.length))))) raise('unsure')
-  // Reading by a relative name in a folder not known: it may be a credential folder.
-  if (now() === 'read' && !known && args.some(a => !a.startsWith('-') && !a.startsWith('/'))) raise('unsure')
-  return tier
+  while (i < words.length && ASSIGN.test(words[i] ?? '')) i++
+  return words.slice(i)
 }
 
-export function bashTier(command: string, root: string, cwds: Cwds = [root]): Tier {
-  const line = command.replace(QUIET, ' ').trim()
-  if (!line) return 'unsure'
-  const start = keepInside(cwds, root)
-  // Simple commands and the operator after each: `|` pipes it into the next.
-  const parts = line.split(/(\|\||&&|[|;\n&])/)
-  let tier: Tier = 'read'
-  let now: (string | undefined)[] = start
-  for (let i = 0; i < parts.length; i += 2) {
-    const segment = parts[i] ?? ''
-    if (!segment.trim()) continue
-    const ws = words(segment)
-    if (CD.has(programOf(ws))) {
-      // `cd` to a folder outside this one (or one not known): what follows runs elsewhere.
-      const after = cdTargets(ws.slice(leadingCount(ws)), now, root)
-      tier = stricter(tier, after.some(c => c === undefined) || ws.slice(0, leadingCount(ws)).some(riskyAssignment) ? 'unsure' : 'local_write')
-      // After `&&` only the moved shell runs on; after `;`, `|` or `||` either may.
-      now = parts[i + 1] === '&&' ? after : parts[i + 1] === '||' ? now : union(now, after)
-      continue
+/** Every command a raw segment may run: itself, and what its wrappers, shells and finds run. */
+const candidates = (raw: string, t: TierTable): string[] => {
+  const out = new Set<string>()
+  const queue: string[][] = [shellWords(raw)]
+  const seen = new Set<string>([queue[0]?.join(' ') ?? ''])
+  for (let taken = 0; queue.length > 0 && taken < MAX_LISTS; taken++) {
+    const list = dropAssignments(queue.shift() ?? [])
+    if (list.length === 0) continue
+    const L = [basename(list[0] ?? ''), ...list.slice(1)]
+    out.add(L.join(' '))
+    const cuts: number[] = []
+    const first = L[0] ?? ''
+    if (t.prefixWords.includes(first)) cuts.push(1)
+    if (L.length > 1 && t.prefixPairs.includes(`${first} ${L[1] ?? ''}`)) cuts.push(2)
+    for (let i = 1; i < L.length; i++) {
+      if (t.shells.includes(first) && SHELL_C.test(L[i] ?? '')) cuts.push(i + 1)
+      if (first === 'find' && FIND_EXEC.has(L[i] ?? '')) cuts.push(i + 1)
     }
-    tier = stricter(tier, segmentTier(segment, root, now))
-    // Piped into a shell or an interpreter: what comes before it is code.
-    const next = parts[i + 2]
-    if (parts[i + 1] === '|' && next !== undefined) {
-      const prog = programOf(words(next))
-      if (SHELLS.has(prog) || INTERPRETERS.has(prog)) tier = stricter(tier, 'unsure')
+    for (const s of cuts) {
+      for (let k = s; k < L.length; k++) {
+        const suffix = L.slice(k)
+        const key = suffix.join(' ')
+        if (seen.has(key)) continue
+        seen.add(key)
+        queue.push(suffix)
+      }
     }
   }
-  // Commands inside substitutions, subshells and `sh -c '…'` / `eval '…'` count as
-  // commands of their own (a `kubectl` there is still a deploy).
-  for (const m of line.matchAll(/\$\(([^()]*)\)|`([^`]*)`|\(([^()]*)\)/g)) tier = stricter(tier, bashTier(m[1] ?? m[2] ?? m[3] ?? '', root, start))
-  for (const m of line.matchAll(/(?:\b(?:ba|z|da|k|fi)?sh|\beval|\bxargs|\bwatch)\s+(?:-\w+\s+)*(["'])([\s\S]*?)\1/g)) tier = stricter(tier, bashTier(m[2] ?? '', root, start))
-  // Substitutions, redirections, escapes, background jobs: the parts above are
-  // not the whole story, so at least unsure (stricter rules above still count).
-  if (UNSAFE.test(line) || /(?:^|[^&])&(?!&)/.test(line)) tier = stricter(tier, 'unsure')
-  return tier
+  return [...out]
 }
+
+/** The command a raw segment runs once its wrappers (sudo, env, npx …) are taken off. */
+const primary = (raw: string, t: TierTable): string => {
+  let words = dropAssignments(shellWords(raw))
+  for (;;) {
+    const first = words[0] ?? ''
+    let n = 0
+    if (words.length > 2 && t.prefixPairs.includes(`${first} ${words[1] ?? ''}`)) n = 2
+    else if (words.length > 1 && t.prefixWords.includes(first)) n = 1
+    if (n === 0) break
+    words = words.slice(n)
+    while (words.length > 0 && ((words[0] ?? '').startsWith('-') || ASSIGN.test(words[0] ?? ''))) words = words.slice(1)
+  }
+  if (words.length === 0) return ''
+  return [basename(words[0] ?? ''), ...words.slice(1)].join(' ')
+}
+
+const redirectTargets = (raw: string): string[] => {
+  const out: string[] = []
+  for (const m of raw.matchAll(/>[>|]?\s*([^\s<>]+)/g)) out.push((m[1] ?? '').replace(/["'\\]/g, ''))
+  return out.filter(Boolean)
+}
+
+const normalizePath = (path: string): string => {
+  const out: string[] = []
+  for (const part of path.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') out.pop()
+    else out.push(part)
+  }
+  return `/${out.join('/')}`
+}
+
+/** Every folder the Bash tool's shell may be in: absolute paths, undefined for one not known. */
+export type Cwds = readonly (string | undefined)[]
+
+const underRoot = (a: string, cwd: string): boolean => {
+  const root = normalizePath(cwd)
+  return a === root || a.startsWith(root === '/' ? '/' : `${root}/`)
+}
+
+const resolveFrom = (f: string, p: string): string => {
+  if (p.startsWith('~')) return p.replace(/\/+$/, '') || '~'
+  return normalizePath(p.startsWith('/') ? p : `${f}/${p}`)
+}
+
+const insideFrom = (p: string, cwd: string, folders: Cwds): boolean => {
+  if (p.startsWith('~') || p.includes('$')) return false
+  if (p.startsWith('/')) return underRoot(normalizePath(p), cwd)
+  return folders.every(f => f !== undefined && underRoot(resolveFrom(f, p), cwd))
+}
+
+const CD = new Set(['cd', 'pushd', 'chdir', 'popd'])
+
+/** The folder set after a raw segment whose primary is `prim` (the table's `folders`). */
+const foldersAfter = (prim: string, folders: Cwds, cwd: string): Cwds => {
+  const words = prim.split(' ').filter(Boolean)
+  const first = words[0] ?? ''
+  if (!CD.has(first)) return folders
+  const target = words.slice(1).find(w => !w.startsWith('-') || w === '-')
+  const add: (string | undefined)[] =
+    first === 'popd' || target === undefined || target === '-' || target.startsWith('~') || target.includes('$')
+      ? [undefined]
+      : folders.map(f => {
+          if (f === undefined) return undefined
+          const a = resolveFrom(f, target)
+          return underRoot(a, cwd) ? a : undefined
+        })
+  return [...new Set([...folders, ...add])]
+}
+
+const leadingAssignments = (raw: string, t: TierTable): string[] => {
+  const words = shellWords(raw)
+  const out: string[] = []
+  let afterPrefix = false
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] ?? ''
+    if (ASSIGN.test(w)) out.push(w)
+    else if (afterPrefix && w.startsWith('-')) continue
+    else if (i + 1 < words.length && t.prefixPairs.includes(`${w} ${words[i + 1] ?? ''}`)) {
+      afterPrefix = true
+      i++
+    } else if (t.prefixWords.includes(w)) afterPrefix = true
+    else break
+  }
+  return out
+}
+
+const isReader = (segment: string, readers: TierTable['readers']): boolean => {
+  const w = segment.split(' ').filter(Boolean)
+  if (w.some(x => x.startsWith('--output') || x.startsWith('--pre'))) return false
+  const [cmd, sub, third] = w
+  if (cmd === undefined) return false
+  if (readers.commands.includes(cmd)) return true
+  if (cmd === 'git') return sub !== undefined && readers.git.includes(sub)
+  if (cmd === 'gh') return sub !== undefined && /^[a-z-]+$/.test(sub) && third !== undefined && readers.gh.includes(third)
+  return false
+}
+
+// ---- the shell's folder across Bash calls ----
+
+const MAX_CWDS = 8
+const capped = (cwds: Cwds): (string | undefined)[] => (cwds.length > MAX_CWDS ? [undefined] : [...cwds])
 
 /**
- * The tier of one tool call; `root` is the session's folder. `cwds`: every folder
- * the Bash tool's shell may be in (undefined: not known); the root when omitted.
+ * The folder set a call starts from: `cd <absolute path inside the root> &&` at the
+ * very start makes it known again (whatever ran before), else what earlier calls left.
  */
-export function classify(tool: string, input: unknown, root: string, cwds: Cwds = [root]): Tier {
-  const i = isRecord(input) ? input : {}
-  if (tool === 'Bash') return i.run_in_background === true ? stricter(bashTier(str(i.command), root, cwds), 'unsure') : bashTier(str(i.command), root, cwds)
-  const path = str(i.file_path) || str(i.notebook_path) || str(i.path) || str(i.filePath)
-  if (path && pathIsSecret(path)) return 'secret'
-  // Grep and Glob over the home folder, ~/.config or / reach the credential folders.
-  if ((tool === 'Grep' || tool === 'Glob') && (path ? isCredentialAncestor(resolvePath(root, path) ?? '/') : isCredentialAncestor(root))) return 'secret'
-  if (READ_TOOLS.has(tool)) return 'read'
-  if (tool === 'Agent') return i.isolation === 'remote' || i.run_in_background === true ? 'unsure' : 'read'
-  if (EDIT_TOOLS.has(tool)) {
-    if (path && AGENT_SETTINGS.test(path)) return 'secret'
-    if (path && RUNS_LATER.test(path)) return 'unsure'
-    return path && insideRoot(path, root) ? 'local_write' : 'unsure'
-  }
-  // Tools by name: payments, then sending; anything else is unknown.
-  if (MONEY_NAME.test(tool)) return 'money'
-  if (SQL_TOOL.test(tool) && /\b(?:DROP|TRUNCATE)\b/i.test(JSON.stringify(input) ?? '')) return 'irreversible'
-  if (OUTWARD_NAME.test(tool)) return 'outward'
-  return 'unsure'
+const startFolders = (command: string, cwds: Cwds, root: string): Cwds => {
+  const m = /^\s*cd\s+(\/\S+)\s*&&/.exec(quiet(command))
+  const target = m?.[1]?.replace(/["'\\]/g, '')
+  return target !== undefined && !target.includes('$') && underRoot(normalizePath(target), root) ? [root] : cwds
 }
+
+/** Where the shell may be after `command` ran, given where it may have been. */
+export function shellCwdsAfter(command: string, cwds: Cwds, root: string): (string | undefined)[] {
+  const t = table()
+  let folders = startFolders(command, cwds, root)
+  for (const raw of splitSegments(quiet(command))) folders = foldersAfter(primary(raw, t), folders, root)
+  // F only grows: the command may stop before a cd, or the cd may fail.
+  return capped([...new Set([...cwds, ...folders])])
+}
+
+// ---- classification ----
+
+export type Classification = { tier: Tier; channels: Channels; matched: string[] }
+
+/**
+ * The tier and channels of one tool call. `root` is the session's folder (the table's
+ * `cwd`); `cwds` is where the shell may be, the root when omitted (exactly the table).
+ */
+export function classifyAction(tool: string, inputValue: unknown, root: string, cwds: Cwds = [root]): Classification {
+  const t = table()
+  const input = isRecord(inputValue) ? inputValue : {}
+  const isBash = tool === 'Bash'
+  const rawCommand = isBash && typeof input.command === 'string' ? input.command : undefined
+  const command = rawCommand !== undefined ? quiet(rawCommand) : undefined
+  const rawSegments = command !== undefined ? splitSegments(command) : []
+  const primaries = rawSegments.map(s => primary(s, t))
+  const start = rawCommand !== undefined ? startFolders(rawCommand, cwds, root) : [root]
+  const judged: { segments: string[]; targets: string[]; folders: Cwds }[] = []
+  let folders: Cwds = start
+  rawSegments.forEach((raw, i) => {
+    const prim = primaries[i] ?? ''
+    judged.push({ segments: [...new Set([...candidates(raw, t), ...(prim ? [prim] : [])])], targets: redirectTargets(raw), folders })
+    folders = foldersAfter(prim, folders, root)
+  })
+  const segments = [...new Set(judged.flatMap(j => j.segments))]
+  const assignments = rawSegments.flatMap(raw => leadingAssignments(raw, t))
+
+  const pathCandidates: string[] = isBash
+    ? segments.flatMap(s => s.split(' ').flatMap(w => [w, ...w.split(/[=:]/)]))
+    : t.pathFields.map(f => input[f]).filter((v): v is string => typeof v === 'string')
+
+  const matched: Compiled[] = []
+  let toolRuleMatched = false
+  const test = (r: Compiled, text: string): boolean => r.re.test(text) && !(r.unlessRe?.test(text) ?? false)
+  const outsideWord = (w: string, f: Cwds): boolean => [w, ...w.split('=')].some(part => part !== '' && !part.startsWith('-') && !insideFrom(part, root, f))
+  const reachesTarget = (r: Compiled, roots: readonly string[], f: Cwds): boolean =>
+    roots.some(
+      r0 =>
+        r0.includes('$') ||
+        f.some(base => {
+          if (base === undefined && !r0.startsWith('/') && !r0.startsWith('~')) return true
+          return r.targetRe?.test(resolveFrom(base ?? root, r0)) ?? false
+        }),
+    )
+  for (const r of rules()) {
+    let hit = false
+    switch (r.on) {
+      case 'tool':
+        hit = test(r, tool)
+        if (hit) toolRuleMatched = true
+        break
+      case 'input':
+        hit = (r.toolsRe?.test(tool) ?? true) && test(r, canonicalJson(input))
+        if (hit) toolRuleMatched = true
+        break
+      case 'command':
+        hit = command !== undefined && test(r, command.replace(/&&|\|\|/g, ''))
+        break
+      case 'segment':
+        hit = segments.some(s => test(r, s))
+        break
+      case 'rawSegment':
+        hit = rawSegments.some(s => test(r, s))
+        break
+      case 'path':
+        hit = (r.toolsRe?.test(tool) ?? true) && pathCandidates.some(p => test(r, p))
+        break
+      case 'outside':
+        hit = isBash && judged.some(j => j.segments.some(s => test(r, s) && s.split(' ').slice(1).some(w => outsideWord(w, j.folders))))
+        break
+      case 'redirect':
+        hit = isBash && judged.some(j => j.targets.some(x => !x.startsWith('&') && test(r, x) && !insideFrom(x, root, j.folders)))
+        break
+      case 'searchRoot':
+        if (isBash) {
+          hit = judged.some(j => j.segments.some(s => test(r, s) && reachesTarget(r, ['.', ...s.split(' ').slice(1).filter(w => w !== '' && !w.startsWith('-'))], j.folders)))
+        } else if (r.toolsRe?.test(tool) ?? false) {
+          const roots = ['.', ...t.pathFields.map(f => input[f]).filter((v): v is string => typeof v === 'string')]
+          hit = reachesTarget(r, roots, [root])
+        }
+        break
+      case 'assignment':
+        hit = isBash && assignments.some(a => test(r, a))
+        break
+    }
+    if (hit) matched.push(r)
+  }
+
+  let base: Tier
+  if (t.readTools.includes(tool)) base = 'read'
+  else if (t.writeTools.includes(tool)) base = pathCandidates.length > 0 && pathCandidates.every(p => insideFrom(p, root, [root])) ? 'local_write' : 'unsure'
+  else if (isBash) {
+    if (command === undefined || command.trim() === '') base = 'unsure'
+    else base = primaries.every(s => isReader(s, t.readers)) ? 'read' : 'local_write'
+  } else base = toolRuleMatched ? 'read' : 'unsure'
+
+  const tiers: Tier[] = [base, ...matched.map(r => r.tier)]
+  // The shell may be somewhere not known (an earlier call left it there): what any
+  // command does then is not known either, so nothing below `unsure` runs unasked.
+  if (isBash && start.includes(undefined)) tiers.push('unsure')
+  const tier = tiers.reduce((top, x) => (rank(x) > rank(top) ? x : top), base)
+  return { tier, channels: mergeChannels(tiers), matched: matched.map(r => r.id) }
+}
+
+/** The tier of one tool call, by the shared table (see classifyAction). */
+export const classify = (tool: string, input: unknown, root: string, cwds: Cwds = [root]): Tier => classifyAction(tool, input, root, cwds).tier

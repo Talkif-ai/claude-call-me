@@ -246,7 +246,7 @@ TALKIF_AGENT_ORIGINS=…   #   and its https origins, comma-separated (without b
 
 The **API URL (advanced)** option, when set, beats the file's `TALKIF_API_URL`; `flowId` and `folders` apply as usual. The connector scripts read the same file as a fallback (`--env-file PATH` picks another) and also take `--url URL` (or `TALKIF_API_URL`) and `--key-env VAR`. `node connectors/agent.mjs` is an experimental local helper that holds a WebSocket per session instead of long polling; it is not needed.
 
-Checks before a release: `claude plugin validate . --strict`, `claude plugin test .`, `tsc -p . --noEmit` and `node scripts/sync-vectors.mjs --check`. The shared test vectors of the Talkif Agent Protocol are in `test-vectors/` (`scripts/make-vectors.mjs` makes `tap1.json` with Node's own crypto; the tests compare the plugin's implementation with it).
+Checks before a release: `claude plugin validate . --strict`, `claude plugin test .`, `tsc -p . --noEmit` and `node scripts/sync-vectors.mjs --check`. The shared test vectors of the Talkif Agent Protocol are in `test-vectors/`, copied byte for byte from the protocol's reference implementation (never edited or regenerated here); the tests check every file against `SHA256SUMS` and run every case. `node scripts/sync-vectors.mjs` mirrors them into `tests/vectors.ts` and `hooks/shared-tables.ts`, since the plugin loads only code files.
 
 ## License
 

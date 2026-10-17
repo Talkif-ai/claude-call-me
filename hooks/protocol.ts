@@ -3,7 +3,7 @@
 // runs with, how an owner's passkey proof is checked, what the status line says).
 // No engine calls here, so every rule is tested on its own.
 
-import { redactBody } from './secrets'
+import { OwnSecrets, scrubBody } from './scrub'
 import {
   b64url,
   bodyAad,
@@ -314,9 +314,10 @@ export function sealMessage(
   message: { parts: A2AMessage['parts']; metadata?: A2AMessage['metadata'] },
   recipients: readonly Recipient[],
   keys: KeyPair,
+  own: OwnSecrets = new OwnSecrets({ keys: [keys.boxPrivate, keys.signPrivate] }),
 ): { envelope: Envelope; bodies: Body[] } | undefined {
   const messageId = base.messageId ?? uuidv7()
-  const scrubbed = redactBody(message)
+  const scrubbed = scrubBody(message, own)
   const clean = isRecord(scrubbed) ? scrubbed : {}
   const plain: Record<string, unknown> = { kind: 'message', messageId, role: 'agent', parts: clean.parts ?? [] }
   if (base.requestId) plain.contextId = base.requestId
@@ -521,9 +522,9 @@ export function pinVerdict(pin: PeerPin | undefined, peer: Peer): 'same' | 'new'
 }
 
 /** The canonical, scrubbed input of an action: what is hashed, shown and run; undefined when scrubbing changed it. */
-export function canonicalActionInput(input: unknown): string | undefined {
+export function canonicalActionInput(input: unknown, own?: OwnSecrets): string | undefined {
   const text = canonicalJson(input ?? {})
-  return canonicalJson(redactBody(input ?? {})) === text ? text : undefined
+  return canonicalJson(scrubBody(input ?? {}, own)) === text ? text : undefined
 }
 
 // ---- hidden characters in what the person approves (§6.3) ----

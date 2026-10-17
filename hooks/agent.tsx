@@ -42,8 +42,9 @@ import type { A2AMessage, AgentStatus, Envelope, InboxItem, LocalCeiling, OwnerK
 import { CallTaskScope, readOnlyDenial } from './read-only'
 import { actionHash, agentFingerprint, b64url, fromB64url, generateKeyPair, keyBlob, keysFromBlob, open, randomBytes, sessionAad, sessionProof, sha256Hex, toHex, uuidv7 } from './tap1'
 import type { KeyPair } from './tap1'
-import { classify, needsOwnerProof, rank, shellCwdsAfter, terminalMayApprove } from './tiers'
-import type { Tier } from './tiers'
+import { OwnSecrets } from './scrub'
+import { channelsOf, classifyAction, isTier, rank, shellCwdsAfter } from './tiers'
+import type { Channels, Tier } from './tiers'
 import { fenceUntrusted, peerNote } from './untrusted'
 // One status line for the plugin: register.tsx composes it (this module's part included).
 // A circular import on purpose; both are only called once the modules have loaded.
@@ -126,6 +127,9 @@ type Runtime = {
 }
 
 let rt: Runtime | undefined
+
+/** This agent's own credential and private keys, removed by exact value from what is sealed or shown. */
+const ownOf = (r: Runtime): OwnSecrets => new OwnSecrets({ credential: r.creds.key, keys: r.keys ? [r.keys.boxPrivate, r.keys.signPrivate] : [] })
 const peerScope = new CallTaskScope()
 
 /** The Personal Agent part of the status line, or undefined when no agent credential is set. */
@@ -695,6 +699,7 @@ async function postResult($: EngineInterface, task: TaskInfo, state: 'completed'
         { parts: [{ kind: 'text', text: text.slice(-RESULT_MAX) }], metadata: code ? { code } : undefined },
         [{ agentId: task.fromAgentId, boxPublic: box }],
         r.keys,
+        ownOf(r),
       )
     : undefined
   await hub($, 'POST', `/tasks/${encodeURIComponent(task.taskId)}/status`, sealed ? { state, envelope: sealed.envelope, bodies: sealed.bodies } : { state })
@@ -770,10 +775,10 @@ async function peerGuard($: EngineInterface, e: ToolCallInput, cwd: string): Pro
     }
   }
   if (runNow.mode === 'read_only') return readOnlyDenial(guardedCall(e, input), 'peer')
-  const tier = classify(e.tool, input, cwd, r.cwds)
+  const { tier, channels } = classifyAction(e.tool, input, cwd, r.cwds)
   if (tier === 'read') return undefined
   if (runNow.mode === 'auto' && tier === 'local_write') return undefined
-  return requestApproval($, runNow, e.tool, input, cwd, tier)
+  return requestApproval($, runNow, e.tool, input, cwd, tier, channels)
 }
 
 /**
@@ -782,10 +787,10 @@ async function peerGuard($: EngineInterface, e: ToolCallInput, cwd: string): Pro
  * one) verifies against a passkey confirmed on this machine, and the one-time
  * approval is redeemed. Every other outcome is the deny text.
  */
-async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string, input: Record<string, unknown>, cwd: string, tier: Tier): Promise<string | undefined> {
+async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string, input: Record<string, unknown>, cwd: string, tier: Tier, channels: Channels): Promise<string | undefined> {
   const r = rt
   if (!r?.agentId) return 'Not connected to Talkif.'
-  const canonical = canonicalActionInput(input)
+  const canonical = canonicalActionInput(input, ownOf(r))
   if (canonical === undefined) return `${tool} was not run: its input holds something that looks like a secret, so it cannot be shown for approval. Do it without the secret, or leave it to the developer.`
   if (new TextEncoder().encode(canonical).length > APPROVAL_INPUT_MAX) return `${tool} was not run: its input is too long to show for approval. Split it into smaller steps.`
   const task = runNow.task
@@ -796,8 +801,10 @@ async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string
     return `${tool} was not run: the approval could not be requested (${created.refusal ?? created.status}).`
   }
   const approvalId = created.body.approvalId
-  const finalTier = typeof created.body.tier === 'string' && rank(created.body.tier as Tier) >= 0 && rank(created.body.tier as Tier) > rank(tier) ? (created.body.tier as Tier) : tier
-  const ownerProof = created.body.needsOwnerProof === true || needsOwnerProof(finalTier)
+  // The hub's tier counts only when stricter; its channels are merged in, never weakening ours.
+  const hubTier = isTier(created.body.tier) ? created.body.tier : tier
+  const finalTier = rank(hubTier) > rank(tier) ? hubTier : tier
+  const ownerProof = created.body.needsOwnerProof === true || channels.needsOwnerProof || channelsOf(finalTier).needsOwnerProof
   await postStatus($, task, 'input_required')
   r.approvals += 1
   await refreshStatus($)
@@ -807,7 +814,7 @@ async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string
   const shownCwd = revealHidden(cwd)
   const shownInput = revealHidden(canonical)
   const hidden = shownTool.hidden || shownCwd.hidden || shownInput.hidden
-  const terminal = terminalMayApprove(finalTier) && !ownerProof && !hidden
+  const terminal = channels.terminalApprove && channelsOf(finalTier).terminalApprove && !ownerProof && !hidden
   await showCard($, {
     id: `approval:${approvalId}`,
     title: `Approval needed: task from ${task.fromAgentName}`,
@@ -924,6 +931,7 @@ async function createTask($: EngineInterface, text: string, opts: { target?: Pee
     { parts },
     recipients.list,
     r.keys,
+    ownOf(r),
   )
   if (!sealed) return { ok: false, why: "a recipient's key is unusable" }
   const res = await hub($, 'POST', '/tasks', { envelope: sealed.envelope, bodies: sealed.bodies })
@@ -1006,6 +1014,7 @@ async function runTool($: EngineInterface, name: string, input: Record<string, u
       { parts: [{ kind: 'text', text: str(input.message) }] },
       recipients.list,
       r.keys,
+      ownOf(r),
     )
     if (!sealed) return { result: 'Not sent: the recipient key is unusable.', isError: true }
     const res = await hub($, 'POST', '/messages', { envelope: sealed.envelope, bodies: sealed.bodies })
