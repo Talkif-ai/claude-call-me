@@ -152,5 +152,23 @@
   "lowOrder": {
     "recipientPublic": "0000000000000000000000000000000000000000000000000000000000000000",
     "mustRefuse": true
+  },
+  "nonCanonicalIds": {
+    "refusal": "invalid_envelope",
+    "fields": [
+      "messageId",
+      "from",
+      "requestId",
+      "taskId",
+      "parentTaskId",
+      "to.agents"
+    ],
+    "canonical": "0192f000-0000-7000-8000-000000000001",
+    "forms": [
+      "0192F000-0000-7000-8000-000000000001",
+      "{0192f000-0000-7000-8000-000000000001}",
+      "urn:uuid:0192f000-0000-7000-8000-000000000001",
+      "0192f000000070008000000000000001"
+    ]
   }
 }

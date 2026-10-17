@@ -48,6 +48,7 @@ const V = vectorFile('tap1.json') as Json & {
   keyFingerprint: { publicKey: string; signingKey: string; fingerprint: string }
   ownerKey: { alg: number; cose: string; fingerprint: string }
   lowOrder: { recipientPublic: string; mustRefuse: boolean }
+  nonCanonicalIds: { refusal: string; fields: string[]; canonical: string; forms: string[] }
 }
 const hex = (h: string): Uint8Array => {
   const b = T.fromHex(h)
@@ -293,6 +294,27 @@ function sealedItem(sender: T.KeyPair, recipient: T.KeyPair, over?: { kind?: 'me
   return item
 }
 const pinOf = (k: T.KeyPair): PeerPin => ({ boxPublic: T.b64url(k.boxPublic), signPublic: T.b64url(k.signPublic), name: 'laptop' })
+
+test('ids: every non-canonical spelling in nonCanonicalIds is dropped as malformed; the opener never case-folds', async () => {
+  const ids = V.nonCanonicalIds
+  expect(ids.refusal).toBe('invalid_envelope')
+  expect((REFUSALS as readonly string[]).includes(ids.refusal)).toBe(true)
+  const me = T.generateKeyPair()
+  const good = sealedItem(T.generateKeyPair(), me)
+  expect(acceptItem(good, ME, me, {}).type).toBe('unknown-peer')
+  for (const field of ids.fields) {
+    for (const form of ids.forms) {
+      const raw: Record<string, unknown> = { ...good.raw }
+      if (field === 'to.agents') raw.to = { agents: [form] }
+      else raw[field] = form
+      expect(acceptItem({ ...good, raw }, ME, me, {})).toEqual({ type: 'drop', reason: 'malformed envelope' })
+    }
+  }
+  // HKDF info is the id byte for byte: the upper-case spelling derives another key.
+  expect(ids.forms[0]).toBe(ids.canonical.toUpperCase())
+  expect(T.open(V.ciphertext, hex(V.inputs.recipientPrivate), ids.forms[0] ?? '', String(V.aad))).toBe(undefined)
+  expect(T.fromUtf8(T.open(V.ciphertext, hex(V.inputs.recipientPrivate), ids.canonical, String(V.aad)) ?? new Uint8Array())).toBe(V.inputs.plaintext)
+})
 
 test('inbox: a signed body opens; a bad signature, a stranger, a body-less client kind or a hub kind with a body are dropped', async () => {
   const sender = T.generateKeyPair()

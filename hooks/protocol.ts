@@ -201,6 +201,7 @@ function parseEnvelope(v: unknown): Envelope | undefined {
   if (!isClientKind(v.kind) && !isHubKind(v.kind)) return undefined
   const to = isRecord(v.to) ? v.to : {}
   for (const id of [v.requestId, v.taskId, v.parentTaskId]) if (optId(id) === false) return undefined
+  if (Array.isArray(to.agents) && !to.agents.every(isId)) return undefined
   const nullable = (x: unknown): string | null => (typeof x === 'string' ? x : null)
   return {
     v: 1,

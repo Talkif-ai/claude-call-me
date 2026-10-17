@@ -119,7 +119,7 @@ const INFO = utf8('talkif-agent-protocol/v1/body')
 const isAllZero = (bytes: Uint8Array): boolean => bytes.every(b => b === 0)
 
 function bodyKey(shared: Uint8Array, epk: Uint8Array, recipientPublic: Uint8Array, messageId: string): Uint8Array {
-  return hkdf(sha256, shared, concat(epk, recipientPublic), concat(INFO, Uint8Array.of(0), utf8(messageId.toLowerCase())), 32)
+  return hkdf(sha256, shared, concat(epk, recipientPublic), concat(INFO, Uint8Array.of(0), utf8(messageId)), 32)
 }
 
 /** Shared X25519 secret, or undefined for a low-order public key (all-zero output) or a bad key. */
