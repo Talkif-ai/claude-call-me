@@ -1,0 +1,419 @@
+{
+  "rank": [
+    "read",
+    "local_write",
+    "outward",
+    "irreversible",
+    "unsure",
+    "secret",
+    "money",
+    "prod_deploy"
+  ],
+  "cases": [
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git status"
+      },
+      "cwd": "/repo",
+      "tier": "read"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "ls -la src"
+      },
+      "cwd": "/repo",
+      "tier": "read"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "/repo/README.md"
+      },
+      "cwd": "/repo",
+      "tier": "read"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cargo test"
+      },
+      "cwd": "/repo",
+      "tier": "local_write"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git commit -m wip"
+      },
+      "cwd": "/repo",
+      "tier": "local_write"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "rm -rf build"
+      },
+      "cwd": "/repo",
+      "tier": "local_write"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/repo/src/main.rs",
+        "old_string": "a",
+        "new_string": "b"
+      },
+      "cwd": "/repo",
+      "tier": "local_write"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cd web && yarn build"
+      },
+      "cwd": "/repo",
+      "tier": "local_write"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git push origin main"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "gh pr merge 12"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "gh pr create --fill"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "yarn publish"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "curl -X POST https://example.com/hook"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "curl -d x=1 https://example.com"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "ssh host uptime"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "mcp__slack__send_message",
+      "input": {
+        "channel": "x",
+        "text": "hi"
+      },
+      "cwd": "/repo",
+      "tier": "outward"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "rm -rf /tmp/cache"
+      },
+      "cwd": "/repo",
+      "tier": "irreversible"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "rm -rf ../other"
+      },
+      "cwd": "/repo",
+      "tier": "irreversible"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git reset --hard HEAD~1"
+      },
+      "cwd": "/repo",
+      "tier": "irreversible"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git clean -fdx"
+      },
+      "cwd": "/repo",
+      "tier": "irreversible"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git branch -D old"
+      },
+      "cwd": "/repo",
+      "tier": "irreversible"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "psql -c 'DROP TABLE users'"
+      },
+      "cwd": "/repo",
+      "tier": "irreversible"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "node -e \"fetch('https://x',{method:'POST'})\""
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "python -c \"import urllib.request\""
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "python3 -c 'print(1)'"
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "bash -c 'git push'"
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cat script | sh"
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "curl https://example.com"
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "WebFetch",
+      "input": {
+        "url": "https://example.com"
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/etc/hosts",
+        "old_string": "a",
+        "new_string": "b"
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "osascript -e 'beep'"
+      },
+      "cwd": "/repo",
+      "tier": "unsure"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "security find-generic-password -s talkif-agent -w"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cat ~/.config/talkif/agent/x.json"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cat .env"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "printenv"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "env"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cat /proc/1/environ"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "gh auth token"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "/Users/dev/.claude/settings.json"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "/Users/dev/.ssh/id_ed25519"
+      },
+      "cwd": "/repo",
+      "tier": "secret"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "curl https://api.stripe.com/v1/charges"
+      },
+      "cwd": "/repo",
+      "tier": "money"
+    },
+    {
+      "tool": "mcp__stripe__create_refund",
+      "input": {
+        "charge": "ch_1"
+      },
+      "cwd": "/repo",
+      "tier": "money"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "terraform apply"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "terraform -chdir=infra apply -auto-approve"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "kubectl get pods"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "helm upgrade api ./chart"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "gh workflow run deploy.yml"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "./scripts/deploy.sh"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "aws ec2 terminate-instances --instance-ids i-1"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "echo $(kubectl apply -f x.yaml)"
+      },
+      "cwd": "/repo",
+      "tier": "prod_deploy"
+    }
+  ]
+}

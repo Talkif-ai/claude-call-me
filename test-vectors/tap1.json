@@ -1,0 +1,105 @@
+{
+  "v": 1,
+  "alg": "X25519-HKDF-SHA256-A256GCM",
+  "inputs": {
+    "recipientPrivate": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+    "recipientPublic": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+    "ephemeralPrivate": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+    "ephemeralPublic": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+    "signingPrivate": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "signingPublic": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "messageId": "0192f000-0000-7000-8000-000000000001",
+    "from": "0192f000-0000-7000-8000-0000000000aa",
+    "recipient": "0192f000-0000-7000-8000-0000000000bb",
+    "nonce": "000102030405060708090a0b",
+    "plaintext": "{\"kind\":\"message\",\"messageId\":\"0192f000-0000-7000-8000-000000000001\",\"role\":\"agent\",\"parts\":[{\"kind\":\"text\",\"text\":\"hello from tap/1\"}]}",
+    "envelope": {
+      "topics": [
+        "ios",
+        "build"
+      ],
+      "to": {
+        "agents": [
+          "0192f000-0000-7000-8000-0000000000bb"
+        ]
+      },
+      "v": 1,
+      "sizeBytes": 136,
+      "requestId": "0192f000-0000-7000-8000-0000000000c1",
+      "permission": "local_write",
+      "parentTaskId": "0192f000-0000-7000-8000-0000000000d1",
+      "notify": "none",
+      "messageId": "0192f000-0000-7000-8000-000000000001",
+      "kind": "task",
+      "hub": null,
+      "from": "0192f000-0000-7000-8000-0000000000aa",
+      "depth": 2,
+      "deadlineAt": "2026-10-17T12:00:00Z",
+      "taskId": "0192f000-0000-7000-8000-0000000000d2"
+    }
+  },
+  "shared": "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+  "canonicalEnvelope": "{\"deadlineAt\":\"2026-10-17T12:00:00Z\",\"depth\":2,\"from\":\"0192f000-0000-7000-8000-0000000000aa\",\"kind\":\"task\",\"messageId\":\"0192f000-0000-7000-8000-000000000001\",\"notify\":\"none\",\"parentTaskId\":\"0192f000-0000-7000-8000-0000000000d1\",\"permission\":\"local_write\",\"requestId\":\"0192f000-0000-7000-8000-0000000000c1\",\"sizeBytes\":136,\"taskId\":\"0192f000-0000-7000-8000-0000000000d2\",\"to\":{\"agents\":[\"0192f000-0000-7000-8000-0000000000bb\"]},\"topics\":[\"ios\",\"build\"],\"v\":1}",
+  "envHash": "370c0d86cc9fdf7847328e4924f11684b97a87384631953229842a4703a889bf",
+  "hkdfKey": "d8097af8cb3b9dd985ceb7845fafc03283ad58ea9f010af8f19f22dfd38b73a3",
+  "aad": "tap/1|370c0d86cc9fdf7847328e4924f11684b97a87384631953229842a4703a889bf|0192f000-0000-7000-8000-0000000000bb",
+  "ciphertext": {
+    "v": 1,
+    "alg": "X25519-HKDF-SHA256-A256GCM",
+    "epk": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+    "nonce": "AAECAwQFBgcICQoL",
+    "ct": "ekyBr-CHuN7Z9to0zNSsX0ClNzLg4csfTLYukoMrJF-k_AnT9SKlgfYY_fVFXCCrBLKspm43Lncruzle78K7ji0-empzIDhnyN_BtW84-Am1ahymqmIdsTu-0GV5qgzIxZnhHksvdzrfRWThp7KO2GTpZ5HZHLb1XWv0xekF7ymg9Mo9f5WvdqAMxJ7yUx7izloBZ3iqVOI"
+  },
+  "sig": "oHbRZuy4Qv3-_Ba4p-pfUoCm3Z_TM9Ex-NE7BnfDDtbFi2_Ampw69iaGPA83K73KI3eWh2ue-oKT0ftkTCbCDw",
+  "lowOrderPublicKey": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chunks": {
+    "ticketId": "0192f000-0000-7000-8000-0000000000e1",
+    "totalBytes": 20,
+    "sha256": "6bc14bdc4517a7a682c6910de2e2946eb8e1ecd04090728fef6d092a7ceb62c5",
+    "consumer": "0192f000-0000-7000-8000-0000000000bb",
+    "items": [
+      {
+        "seq": 0,
+        "last": false,
+        "plaintext": "MDEyMzQ1Njc4OQ",
+        "aad": "tap/1-chunk|0192f000-0000-7000-8000-0000000000e1|0|0|20|0192f000-0000-7000-8000-0000000000bb",
+        "hkdfKey": "286978271fc3251c772a4b04d71993d2793e03579fcbf20b9fc889038ed9c5d7",
+        "ct": "rzOQvps_-N3A8hK5zljpuXHWBPjeHiOZw3c",
+        "sig": "PEKMSI-CHHyDkIOJ-DrUYw7fVCld44YSLHoAcKSPT5xQTjhSiC720aUkwiknPmPaCfCQVVgOOcid4rUlofpeAg"
+      },
+      {
+        "seq": 1,
+        "last": true,
+        "plaintext": "YWJjZGVmZ2hpag",
+        "aad": "tap/1-chunk|0192f000-0000-7000-8000-0000000000e1|1|1|20|0192f000-0000-7000-8000-0000000000bb",
+        "hkdfKey": "c30e8516d9f0326ec6dc02a5bfc91e460adf00c8dd12ca1b9cab1792bf24de84",
+        "ct": "GaYi524HnAe7A6XoOlmU7OT5jScWhmcuEWA",
+        "sig": "u7Q7riNl5ua7N_RU1Vx4e8YR5B4qp62Y7fLirhgUoF4KhWrdAvAn68Wd8g5lIWmdmEiemkrnQrkqTJN32kPaCA"
+      }
+    ]
+  },
+  "session": {
+    "sid": "0192f000-0000-7000-8000-0000000000f1",
+    "nonce": "0707070707070707070707070707070707070707070707070707070707070707",
+    "aad": "tap/1-session|0192f000-0000-7000-8000-0000000000f1|0192f000-0000-7000-8000-0000000000bb",
+    "sealedNonce": {
+      "v": 1,
+      "alg": "X25519-HKDF-SHA256-A256GCM",
+      "epk": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "nonce": "AAECAwQFBgcICQoL",
+      "ct": "fp66eZiLFmnBQlnXw_Wden3hANUXLHXaE7cTLiroWhyE-PVmBD7sIZVUMEv-xoqn"
+    },
+    "proof": "BRjn4nCGQxo_iwLJsCbIB0ax9xTlwzJWbWSVnHIst64"
+  },
+  "action": {
+    "agentId": "0192f000-0000-7000-8000-0000000000bb",
+    "taskId": "0192f000-0000-7000-8000-0000000000d2",
+    "tool": "Bash",
+    "input": {
+      "command": "git push origin main"
+    },
+    "cwd": "/repo",
+    "preimage": "tap/1-action\n0192f000-0000-7000-8000-0000000000bb\n0192f000-0000-7000-8000-0000000000d2\nBash\n{\"command\":\"git push origin main\"}\n/repo",
+    "actionHash": "f36fe1bdcbe2c8c53cde9427f128187bfa3b486503bb92c7699db7294ae191de"
+  }
+}

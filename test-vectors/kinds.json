@@ -1,0 +1,11 @@
+[
+  "message",
+  "task",
+  "status",
+  "result",
+  "bid_request",
+  "bid_outcome",
+  "file_request",
+  "approval_update",
+  "task_canceled"
+]
