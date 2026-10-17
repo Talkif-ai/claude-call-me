@@ -11,7 +11,8 @@
 // the key from $TALKIF_API_KEY (or --key-env VAR), ~/.config/talkif/dev.env
 // as the developer fallback.
 //
-// --audience: private (only you), team (your organization, the default) or public
+// --audience: team (the default) or private: only you in a personal account, every
+// signed-in member in an organization (they reach all of its connectors); or public
 // (any caller of your account's flows whose Connectors node is open to callers;
 // such a connector only answers `lookup`). Only put public material in a public folder.
 //

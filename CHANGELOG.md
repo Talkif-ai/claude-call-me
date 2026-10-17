@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.24.0 — 2026-10-17
+
+- **Organizations share their connectors.** In an organization, every owner, admin and member on a proven call reaches all of its connectors, your coding sessions included, for questions and tasks. In a personal account only you do. See "Who can reach what" in the README.
+- **Who asked:** a question or task from a call now starts with the asker's name ("Question from Ada on a call", "Task from Ada on a call") when Talkif sends it, and `/cm traffic` shows it. The name is cleaned to one short line before it reaches the prompt.
+- Tasks from a call stay read-only by default, whoever gives them. A task from another member never rings you back.
+- Registers with `callerNames`: in an organization, other members reach a session only when its call-me says who asked, so sessions on older versions stay yours alone.
+
 ## 0.23.0 — 2026-10-17
 
 - **Is it on?** A status line under the prompt always says: `on · <account>`, `on a call`, `reconnecting…`, `off`, or `not set up — run /cm setup`. See "Is it on?" in the README.

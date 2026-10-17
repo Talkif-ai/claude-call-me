@@ -292,3 +292,14 @@ export function cmHeadline(state: CallMeState): string {
   const names = state.registered.length ? state.registered : state.accounts
   return names.length ? `On — this session can be reached through ${names.join(', ')} (Talkif).` : 'On — this session can be reached through Talkif.'
 }
+
+/**
+ * The name of the signed-in person who asked, as Talkif sends it (`callerName`),
+ * made safe to put in a prompt: letters, digits, spaces and . ' - only, one line,
+ * at most 60 characters. `undefined` when nothing is left.
+ */
+export function askerName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const name = raw.normalize('NFC').replace(/[^\p{L}\p{M}\p{N} .'-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 60).trim()
+  return name || undefined
+}

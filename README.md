@@ -96,10 +96,15 @@ Under the prompt, call-me shows one status line:
 - **Tasks from a call are read-only by default.** While such a task runs, only tools that read work: reading files, searching, `git status`, `git log`, `git diff` and a few other read-only commands. Anything that changes something is refused, and the session tells you what it would change. You approve that at the terminal. To let call tasks use the session's normal Claude Code permissions, set the option `callTasks` to `session`. The plugin never grants a permission by itself.
 - **Credential files are not read during a call task**: for example `~/.ssh`, `~/.aws`, `.env` files and key files.
 - **Secrets are kept off the call, as well as possible.** The voice agent and the sessions are told never to say keys, tokens or passwords. The plugin also replaces text that looks like a secret with `[redacted]` before it leaves your machine. This is best effort: a secret in an unusual format can still get through.
-- **Only you count as you.** Only a call you start from the Talkif app while signed in, or a call a session places to you, reaches your sessions. A call from a phone number (even yours), an embed or an API key does not.
-- **Coding sessions are private.** Teammates in your organization cannot ask or task your sessions.
+- **Only proven callers count.** A call reaches sessions only when it is started from the Talkif app or dashboard while signed in, when a session places it to you, or when you confirm on your signed-in Talkif app that a call from your phone number is you. Any other call from a phone number, an embed or an API key does not.
 - **Call text is treated as data.** Transcripts and call summaries reach the session marked as text from a call, not as instructions.
 
+## Who can reach what
+
+- **Personal account:** only you reach your sessions and connectors.
+- **Organization:** every owner, admin and member of the organization on a proven call reaches all of its connectors, your coding sessions included: they can ask questions and give tasks. Each question or task names who asked by their Talkif profile name ("Question from Ada on a call", "Task from Ada on a call"), and the session's traffic shows it too. A task from someone else never rings you back. Sessions running a call-me older than 0.24.0 stay reachable by you alone.
+- **Tasks from a call stay read-only by default**, whoever gives them (see `callTasks`).
+- **Callers who are not proven** (phone numbers, embeds, API keys) reach nothing, except connectors you made public, and those only for look-ups.
 ## Commands
 
 | Command | What it does |
@@ -142,7 +147,7 @@ export TALKIF_API_KEY=…
 node connectors/knowledge-folder.mjs ~/notes/product-docs --name "product docs"
 ```
 
-Your organization's members can ask it too. Add `--audience private` to keep it to you, or `--audience public` to let any caller of your flows look things up in it (only for material you would publish).
+Your organization's members can ask it too. Add `--audience public` to let any caller of your flows look things up in it (only for material you would publish).
 
 **Launcher**: answers questions about GitHub, CI, logs and deploys by running Claude Code in plan mode (read-only) with your own tools.
 
@@ -150,7 +155,7 @@ Your organization's members can ask it too. Add `--audience private` to keep it 
 node connectors/launcher.mjs --cwd ~/work --name ops
 ```
 
-It only answers questions, never takes tasks, and only you can reach it. Both scripts take `--topics a,b,c` (what they are about).
+It only answers questions, never takes tasks, and only you can reach it (it runs with your own credentials). Both scripts take `--topics a,b,c` (what they are about).
 
 ## Troubleshooting
 
