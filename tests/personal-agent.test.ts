@@ -773,7 +773,7 @@ test('callerName reaches the ask prompt (regression)', { options: { apiKey: 'tif
 })
 
 const AP = '0192f000-0000-7000-8000-00000000c001'
-const PANE_PROPS = { title: 'Talkif agent', isFocused: true, bodyColumns: 100, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
+const PANE_PROPS = { title: 'Kif', isFocused: true, bodyColumns: 100, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
 
 test('approval pane: approve is offered only for local_write; an outward action offers deny only', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE', peerTasks: 'follow-hub' } }, async ($, on) => {
   const { f, hub, peerKeys, clock, release, releaseApprovals } = await connectedSession($, on, { mode: 'ask_everything' })

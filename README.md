@@ -163,15 +163,15 @@ Change them in `/config` → call-me. The API key is in `/plugin` → Installed 
 | `callback` | on | ring you when a task from a call ends after you hung up |
 | `parallel` | off | queue more tasks from a call while one runs, instead of saying "still on the last task" |
 | `debug` | off | record this session's traffic for `/cm traffic` |
-| `agentKey` | empty | Personal Agent credential (`tif_agent_…`), kept in the keychain. Empty: Personal Agent is off |
+| `agentKey` | empty | Kif credential (`tif_agent_…`), kept in the keychain. Empty: Kif is off |
 | `peerTasks` | `read-only` | `read-only`: tasks from your other connected agents never change anything here. `follow-hub`: they may make local changes when you allow it in Talkif |
 | `voiceApprovals` | `deny` | `allow`: a yes said on your own Talkif call approves an outward action (push, merge, sending) here; never secrets, payments or deploys |
 
-## Personal Agent (connected agents)
+## Kif by Talkif (connected agents)
 
 Early access: Talkif turns it on for your account. Your coding sessions, on any of your machines, and your phone agent become **connected agents**: they can ask each other questions, send notes and give each other tasks, through Talkif.
 
-**Setup.** In the Talkif dashboard (Settings → Personal Agent) add an agent for this machine and copy its credential (`tif_agent_…`, shown once). Paste it in `/plugin` → Installed → call-me → Configure options → **Personal Agent credential**. The first session that connects binds the agent to its folder (the git repository, else the folder); sessions in other folders stay out of it. `/talkif agent bind` moves the binding to the current folder.
+**Setup.** In the Talkif dashboard (Settings → Kif) add an agent for this machine and copy its credential (`tif_agent_…`, shown once). Paste it in `/plugin` → Installed → call-me → Configure options → **Kif credential**. The first session that connects binds the agent to its folder (the git repository, else the folder); sessions in other folders stay out of it. `/talkif agent bind` moves the binding to the current folder.
 
 **What Talkif sees.** Talkif relays messages and keeps who sent what to whom and when, never what they say: each message is encrypted on this machine for each recipient agent (X25519, HKDF-SHA256, AES-256-GCM) and signed (Ed25519). The keys are made here; the private ones stay in the macOS keychain (elsewhere a file only you can read, under `~/.config/talkif/agent/`). Text that looks like a secret is replaced with `[redacted]` before it is encrypted. Your phone agent is the one exception: Talkif holds its key, because it speaks on your calls.
 
@@ -239,8 +239,8 @@ TALKIF_API_URL=https://…  # optional: empty means https://api.talkif.ai
 TALKIF_API_KEY=…         # scopes: calls, flows
 TALKIF_BRIDGE_KEY=…      # scope: Connectors (your personal account)
 TALKIF_ORG_BRIDGE_KEY=…  # optional: Connectors in another account (any TALKIF_<NAME>_BRIDGE_KEY)
-TALKIF_AGENT_KEY=…       # optional: Personal Agent credential, when the agentKey option is empty
-TALKIF_AGENT_RP_ID=…     # Personal Agent on another API URL: the passkey site owner approvals come from
+TALKIF_AGENT_KEY=…       # optional: Kif credential, when the agentKey option is empty
+TALKIF_AGENT_RP_ID=…     # Kif on another API URL: the passkey site owner approvals come from
 TALKIF_AGENT_ORIGINS=…   #   and its https origins, comma-separated (without both, outward actions never run)
 ```
 

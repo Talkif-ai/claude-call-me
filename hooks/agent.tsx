@@ -231,7 +231,7 @@ const UNPROVEN = new Set(['GET /self', 'PUT /self/key', 'PUT /self/card', 'POST 
 const traceparent = (): string => `00-${toHex(randomBytes(16))}-${toHex(randomBytes(8))}-01`
 
 async function hub($: EngineInterface, method: string, path: string, body?: unknown): Promise<Answer> {
-  if (!rt) throw new Error('Personal Agent is not set up')
+  if (!rt) throw new Error('Kif is not set up')
   const headers: Record<string, string> = {
     Authorization: `Bearer ${rt.creds.key}`,
     'Content-Type': 'application/json',
@@ -327,7 +327,7 @@ async function connect($: EngineInterface): Promise<boolean> {
   const selfRes = await hub($, 'GET', '/self')
   if (selfRes.status === 401 || selfRes.status === 403) {
     if (selfRes.refusal && STOPPING.includes(selfRes.refusal)) stopAll($, selfRes.refusal)
-    else setProblem($, agentRefusalReason(selfRes.text) ?? { reason: 'Talkif refused the Personal Agent credential', next: 'create a new credential in the Talkif dashboard (Settings → Personal Agent)' })
+    else setProblem($, agentRefusalReason(selfRes.text) ?? { reason: 'Talkif refused the Kif credential', next: 'create a new credential in the Talkif dashboard (Settings → Kif)' })
     return false
   }
   const self = parseSelf(selfRes.body)
@@ -367,7 +367,7 @@ async function connect($: EngineInterface): Promise<boolean> {
   } else {
     r.keys = await loadPrivateKeys($, r.dir, self.agentId)
     if (!r.keys) {
-      setProblem($, { reason: 'this agent has keys on Talkif but this machine has no private key for it', next: 'rotate the credential in the Talkif dashboard (Settings → Personal Agent) and paste the new one' })
+      setProblem($, { reason: 'this agent has keys on Talkif but this machine has no private key for it', next: 'rotate the credential in the Talkif dashboard (Settings → Kif) and paste the new one' })
       return false
     }
   }
@@ -390,7 +390,7 @@ async function connect($: EngineInterface): Promise<boolean> {
   r.problem = undefined
   const proven = await openSession($)
   // The owner-keys route needs the proven session.
-  if (proven) void pinOwnerKeys($, false).then(note => (note.startsWith('Your ') ? undefined : $.ui.log(`call-me (Personal Agent): ${note}`)), () => undefined)
+  if (proven) void pinOwnerKeys($, false).then(note => (note.startsWith('Your ') ? undefined : $.ui.log(`call-me (Kif): ${note}`)), () => undefined)
   return proven
 }
 
@@ -421,7 +421,7 @@ async function openSession($: EngineInterface): Promise<boolean> {
 
 function setProblem($: EngineInterface, problem: Problem) {
   if (!rt) return
-  if (rt.problem?.reason !== problem.reason) $.ui.log(`call-me (Personal Agent): ${problemText(problem)}`)
+  if (rt.problem?.reason !== problem.reason) $.ui.log(`call-me (Kif): ${problemText(problem)}`)
   rt.problem = problem
   void refreshStatus($)
 }
@@ -475,7 +475,7 @@ async function pinOwnerKeys($: EngineInterface, asked: boolean): Promise<string>
     title: 'Confirm your passkeys',
     lines: [
       'Outward actions a connected agent wants to run here (push, deploy, messages, secrets) need your passkey.',
-      'Check that these fingerprints match Settings → Personal Agent in the Talkif dashboard:',
+      'Check that these fingerprints match Settings → Kif in the Talkif dashboard:',
       ...fresh.map(k => `  ${k.fingerprint}  (${k.alg})`),
     ],
     buttons: [{ key: 'confirm', label: 'They match', primary: true }, { key: 'cancel', label: 'Not now' }],
@@ -483,9 +483,9 @@ async function pinOwnerKeys($: EngineInterface, asked: boolean): Promise<string>
     if (button !== 'confirm' || !rt?.agentId) return
     rt.ownerKeys = [...kept, ...fresh]
     await writePrivate($, ownerPath(rt, rt.agentId), JSON.stringify({ keys: rt.ownerKeys.map(k => ({ credentialId: k.credentialId, publicKey: b64url(k.cose) })) }))
-    $.ui.log('call-me (Personal Agent): your passkeys are confirmed on this machine.')
+    $.ui.log('call-me (Kif): your passkeys are confirmed on this machine.')
   })
-  return 'Check the fingerprints in the Personal Agent pane and confirm them there.'
+  return 'Check the fingerprints in the Kif pane and confirm them there.'
 }
 
 // ---- the pane: cards only the person answers (approvals, passkeys, binding) ----
@@ -493,7 +493,7 @@ async function pinOwnerKeys($: EngineInterface, asked: boolean): Promise<string>
 async function showCard($: EngineInterface, card: AgentCard, action: (button: string) => Promise<void>) {
   cardActions.set(card.id, action)
   await update($, cards, list => [...(list ?? []).filter(c => c.id !== card.id), card])
-  await $.ui.open({ id: PANE, title: 'Talkif agent', focus: true, rows: Math.min(20, card.lines.length + 8) })
+  await $.ui.open({ id: PANE, title: 'Kif', focus: true, rows: Math.min(20, card.lines.length + 8) })
 }
 
 async function closeCard($: EngineInterface, id: string) {
@@ -505,7 +505,7 @@ async function closeCard($: EngineInterface, id: string) {
 async function pressCard($: EngineInterface, id: string, button: string) {
   const action = cardActions.get(id)
   await closeCard($, id)
-  if (action) await action(button).catch(err => $.ui.log(`call-me (Personal Agent): ${String(err)}`))
+  if (action) await action(button).catch(err => $.ui.log(`call-me (Kif): ${String(err)}`))
 }
 
 // ---- receiving ----
@@ -543,7 +543,7 @@ async function handleItem($: EngineInterface, item: InboxItem): Promise<void> {
   }
   if (messageId) markSeen(r, messageId)
   if (accepted.type === 'unknown-peer' || accepted.type === 'drop') {
-    $.ui.log(`call-me (Personal Agent): dropped an item (${accepted.type === 'drop' ? accepted.reason : 'unknown sender'})`)
+    $.ui.log(`call-me (Kif): dropped an item (${accepted.type === 'drop' ? accepted.reason : 'unknown sender'})`)
     return ack($, item.deliveryId)
   }
   if (accepted.type === 'hub') {
@@ -562,7 +562,7 @@ async function handleItem($: EngineInterface, item: InboxItem): Promise<void> {
   if (envelope.taskId) {
     const task = await readTask($, envelope.taskId)
     if (!task || task.fromAgentId !== r.agentId || task.toAgentId !== envelope.from) {
-      $.ui.log('call-me (Personal Agent): dropped an item (not from the agent that task went to)')
+      $.ui.log('call-me (Kif): dropped an item (not from the agent that task went to)')
       return ack($, item.deliveryId)
     }
   }
@@ -824,7 +824,7 @@ async function requestApproval($: EngineInterface, runNow: PeerRun, tool: string
         ? 'This action contains hidden characters (shown as \\uXXXX): what you see may not be what runs, so it cannot be approved. Deny it.'
         : terminal
           ? 'Approve or deny it here, or on the Talkif dashboard.'
-          : 'Only your passkey can approve this: open the Talkif dashboard (Settings → Personal Agent). You can deny it here.',
+          : 'Only your passkey can approve this: open the Talkif dashboard (Settings → Kif). You can deny it here.',
     ],
     code: shownInput.shown,
     buttons: terminal ? [{ key: 'approve', label: 'Approve once', primary: true }, { key: 'deny', label: 'Deny' }] : [{ key: 'deny', label: 'Deny', primary: true }],
@@ -911,7 +911,7 @@ function lineage(): { requestId: string | null; parentTaskId: string | null; dep
 
 async function createTask($: EngineInterface, text: string, opts: { target?: Peer; capabilities?: string[]; write: boolean; ask: boolean }): Promise<{ ok: true; taskId: string } | { ok: false; why: string }> {
   const r = rt
-  if (!r?.keys || !r.agentId) return { ok: false, why: 'this session is not connected as a Talkif agent' }
+  if (!r?.keys || !r.agentId) return { ok: false, why: 'this session is not connected to Kif' }
   await refreshPeers($, false)
   const asked = (opts.capabilities ?? []).map(c => c.trim().toLowerCase())
   const caps = asked.filter(c => /^[a-z0-9][a-z0-9-]{0,31}$/.test(c))
@@ -983,7 +983,7 @@ type ToolAnswer = { result: string; isError?: true }
 
 async function runTool($: EngineInterface, name: string, input: Record<string, unknown>): Promise<ToolAnswer> {
   const r = rt
-  if (!r?.agentId || !r.sid) return { result: 'This session is not connected as a Talkif agent right now (see /talkif agent).', isError: true }
+  if (!r?.agentId || !r.sid) return { result: 'This session is not connected to Kif right now (see /talkif agent).', isError: true }
   if (name === 'list_agents') {
     await refreshPeers($, true)
     if (r.peers.length === 0) return { result: 'No other connected agents.' }
@@ -1149,13 +1149,13 @@ async function poll($: EngineInterface): Promise<void> {
     if (!res.ok) throw new Error(`inbox → ${res.status}`)
     r.failures = 0
     r.note = undefined
-    for (const item of parseInbox(res.body)) await handleItem($, item).catch(err => $.ui.log(`call-me (Personal Agent): an item failed: ${String(err)}`))
+    for (const item of parseInbox(res.body)) await handleItem($, item).catch(err => $.ui.log(`call-me (Kif): an item failed: ${String(err)}`))
     await refreshStatus($)
     schedule($, 0)
   } catch (err) {
     r.failures += 1
     const backoff = Math.min(60_000, 1_000 * 2 ** r.failures)
-    if (r.failures === 3 || (r.failures > 3 && r.failures % 10 === 0)) $.ui.log(`call-me (Personal Agent): ${String(err)}; retrying in ${backoff / 1000}s`)
+    if (r.failures === 3 || (r.failures > 3 && r.failures % 10 === 0)) $.ui.log(`call-me (Kif): ${String(err)}; retrying in ${backoff / 1000}s`)
     await refreshStatus($)
     schedule($, backoff)
   }
@@ -1193,11 +1193,11 @@ async function standby($: EngineInterface) {
 
 async function agentCommand($: EngineInterface, args: string): Promise<string> {
   const r = rt
-  if (!r) return 'Personal Agent is off: no agent credential is set (agentKey in /plugin → call-me → Configure options).'
+  if (!r) return 'Kif is off: no agent credential is set (agentKey in /plugin → call-me → Configure options).'
   const [a, b, c, extra] = args.trim().split(/\s+/).filter(Boolean)
   if (a !== 'agent' || extra) return 'Commands: /talkif agent · /talkif agent bind · /talkif agent trust-owner · /talkif agent trust <agent id>'
   if (!b) {
-    if (r.problem) return `Personal Agent: ${problemText(r.problem)}`
+    if (r.problem) return `Kif: ${problemText(r.problem)}`
     const lines = [personalAgentStatus() ?? '', `This session's folder: ${r.root}`, `Bound to: ${r.boundRoot ?? 'not yet'}`, `Tasks from other agents here: ${r.peerCeiling === 'read-only' ? 'read-only (peerTasks option)' : `the mode set in Talkif (${r.self?.mode ?? '?'}), capped by what each task is granted`}`]
     if (r.peers.length) lines.push(`Agents: ${r.peers.map(p => `${p.name}${p.online ? '' : ' (offline)'}`).join(', ')}`)
     return lines.join('\n')
@@ -1206,7 +1206,7 @@ async function agentCommand($: EngineInterface, args: string): Promise<string> {
     if (!r.agentId) return 'Not connected yet; try again in a moment.'
     await showCard($, {
       id: 'bind',
-      title: 'Move the Talkif agent to this folder?',
+      title: 'Move this connected agent to this folder?',
       lines: [`Now: ${r.boundRoot ?? 'not bound'}`, `New: ${r.root}`, 'Only the session in this folder will act as this agent.'],
       buttons: [{ key: 'move', label: 'Move here', primary: true }, { key: 'cancel', label: 'Cancel' }],
     }, async button => {
@@ -1217,7 +1217,7 @@ async function agentCommand($: EngineInterface, args: string): Promise<string> {
       rt.note = undefined
       schedule($, 0)
     })
-    return 'Confirm the move in the Personal Agent pane.'
+    return 'Confirm the move in the Kif pane.'
   }
   if (b === 'trust-owner' && !c) return pinOwnerKeys($, true)
   if (b === 'trust' && c) {
@@ -1233,7 +1233,7 @@ async function agentCommand($: EngineInterface, args: string): Promise<string> {
       lines: [
         pin ? `Pinned on this machine: ${agentFingerprint(fromB64url(pin.boxPublic) ?? new Uint8Array(), fromB64url(pin.signPublic) ?? new Uint8Array())}` : 'Not pinned yet.',
         `Served by Talkif now:     ${agentFingerprint(box, sign)}`,
-        'Compare with the fingerprint in the Talkif dashboard (Settings → Personal Agent) before trusting.',
+        'Compare with the fingerprint in the Talkif dashboard (Settings → Kif) before trusting.',
       ],
       buttons: [{ key: 'trust', label: 'Trust these keys', primary: true }, { key: 'cancel', label: 'Cancel' }],
     }, async button => {
@@ -1241,7 +1241,7 @@ async function agentCommand($: EngineInterface, args: string): Promise<string> {
       rt.pins[peer.agentId] = { boxPublic: b64url(box), signPublic: b64url(sign), name: peer.name }
       await savePins($)
     })
-    return 'Confirm in the Personal Agent pane.'
+    return 'Confirm in the Kif pane.'
   }
   return 'Commands: /talkif agent · /talkif agent bind · /talkif agent trust-owner · /talkif agent trust <agent id>'
 }
@@ -1311,9 +1311,9 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
       approvals: 0,
       toolsRegistered: false,
     }
-    await $.command.register({ name: 'talkif', description: 'Talkif Personal Agent: /talkif agent shows this session as a connected agent.' })
+    await $.command.register({ name: 'talkif', description: 'Kif by Talkif: /talkif agent shows this session as a connected agent.' })
     if (!resolved.ok) {
-      $.ui.log(`call-me (Personal Agent): ${problemText(resolved.problem)}`)
+      $.ui.log(`call-me (Kif): ${problemText(resolved.problem)}`)
       await refreshStatus($)
       return
     }
@@ -1331,7 +1331,7 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
     await refreshStatus($)
     schedule($, 0)
   } catch (err) {
-    $.ui.log(`call-me (Personal Agent): start failed: ${String(err)}`)
+    $.ui.log(`call-me (Kif): start failed: ${String(err)}`)
   }
 }
 
@@ -1398,7 +1398,7 @@ export async function agentTurnComplete($: EngineInterface, e: { turnId: string;
   if (!runNow.canceled && !rt.stopped) {
     const answered = e.reason === 'answer'
     const text = e.answer.trim() || (answered ? 'Finished.' : `Stopped (${e.reason}).`)
-    await postResult($, runNow.task, answered ? 'completed' : 'failed', text, await codeLinks($).catch(() => undefined)).catch(err => $.ui.log(`call-me (Personal Agent): result not sent: ${String(err)}`))
+    await postResult($, runNow.task, answered ? 'completed' : 'failed', text, await codeLinks($).catch(() => undefined)).catch(err => $.ui.log(`call-me (Kif): result not sent: ${String(err)}`))
   }
   await refreshStatus($)
 }

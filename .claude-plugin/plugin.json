@@ -58,8 +58,8 @@
     },
     "agentKey": {
       "type": "string",
-      "title": "Personal Agent credential",
-      "description": "Personal Agent credential (tif_agent_…) from Talkif settings. Makes this session one of your connected agents. Stored in your keychain, never in settings.json. Empty: Personal Agent is off.",
+      "title": "Kif credential",
+      "description": "Kif credential (tif_agent_…) from Talkif settings. Makes this session one of your connected agents. Stored in your keychain, never in settings.json. Empty: Kif is off.",
       "sensitive": true
     },
     "peerTasks": {
