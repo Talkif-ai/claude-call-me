@@ -33,12 +33,12 @@ const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s
 export const REFUSALS = [
   'already_bid', 'another_approval_announced', 'approval_denied', 'approval_expired', 'approval_mismatch', 'approval_required', 'approval_used',
   'bad_ciphertext', 'bid_round_closed', 'body_too_large', 'budget_exhausted', 'caller_did_not_answer', 'canceled', 'cannot_revoke_phone',
-  'card_not_set', 'credential_already_issued', 'credential_revoked', 'cycle', 'deadline_passed', 'depth_limit', 'envelope_too_large', 'expired',
+  'card_not_set', 'connect_already_decided', 'connect_code_invalid', 'credential_already_issued', 'credential_revoked', 'cycle', 'deadline_passed', 'depth_limit', 'envelope_too_large', 'expired',
   'file_unavailable', 'guard_unavailable', 'hidden_characters', 'idempotency_conflict', 'inbox_full', 'invalid_envelope', 'invalid_kind', 'invalid_transition',
   'key_already_set', 'key_not_set', 'live_agents_limit', 'may_not_delegate', 'mode_forbids_write', 'no_bidder', 'no_capable_agent',
   'no_personal_account', 'not_announced_here', 'not_enabled', 'not_owner_call', 'not_personal_call', 'not_task_party', 'open_tasks_limit',
   'owner_proof_required', 'paused', 'rate_limited', 'receiver_mismatch', 'relay_not_allowed', 'request_closed', 'sender_may_not_assign_writes',
-  'session_invalid', 'session_superseded', 'target_not_found', 'too_many_recipients', 'voice_code_missing',
+  'session_invalid', 'session_superseded', 'slow_down', 'target_not_found', 'too_many_recipients', 'voice_code_missing',
 ] as const
 export type Refusal = (typeof REFUSALS)[number]
 

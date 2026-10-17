@@ -56,6 +56,9 @@
     "cannot_revoke_phone",
     "no_personal_account",
     "not_personal_call",
-    "hidden_characters"
+    "hidden_characters",
+    "connect_code_invalid",
+    "connect_already_decided",
+    "slow_down"
   ]
 }
