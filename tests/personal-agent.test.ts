@@ -1091,7 +1091,7 @@ function fakeConnect(answer: () => ReturnType<typeof jsonAnswer>, start: Json = 
   }
   return { seen, handler }
 }
-const approved = (over: Json = {}) => jsonAnswer(200, { status: 'approved', credential: { token: CONNECT_TOKEN, prefix: 'tif_agent_TTTT…TTTT' }, agentId: A1, apiUrl: 'https://api.talkif.ai', ...over })
+const approved = (over: Json = {}) => jsonAnswer(200, { status: 'approved', credential: { token: CONNECT_TOKEN, prefix: 'tif_agent_TTTT…TTTT' }, agentId: A1, ...over })
 const configRows = (on: On, deny: string | undefined) => {
   const sets: unknown[] = []
   on('config.list', () => ({ value: [{ key: 'call-me.agentKey', label: 'Agent Bridge credential', kind: 'text', value: '', provider: { plugin: 'call-me', tier: 'user' }, isLocked: false }] }))

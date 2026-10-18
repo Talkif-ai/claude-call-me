@@ -22,7 +22,7 @@ const SLOW_DOWN_S = 5
 const MAX_FAILURES = 10
 
 export type StartReply = { userCode: string; deviceSecret: string; verifyUrl: string; expiresIn: number; interval: number }
-export type PollReply = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; token: string; agentId: string; apiUrl: string }
+export type PollReply = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; token: string; agentId: string; apiUrl?: string }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -59,7 +59,10 @@ export function parsePoll(body: unknown): PollReply | undefined {
   const token = isRecord(body.credential) ? body.credential.token : undefined
   const { agentId, apiUrl } = body
   if (typeof token !== 'string' || !AGENT_TOKEN.test(token)) return undefined
-  if (typeof agentId !== 'string' || !isId(agentId) || typeof apiUrl !== 'string') return undefined
+  if (typeof agentId !== 'string' || !isId(agentId)) return undefined
+  // Talkif may leave the API address out: the session keeps the one it called.
+  if (apiUrl === undefined) return { status: 'approved', token, agentId }
+  if (typeof apiUrl !== 'string') return undefined
   return { status: 'approved', token, agentId, apiUrl }
 }
 
@@ -140,7 +143,7 @@ async function poll($: EngineInterface, f: Flow): Promise<void> {
     if (answer.status === 'denied') return finish($, f, 'the connect was denied in Talkif; nothing was connected.')
     return finish($, f, 'the connect code expired or was already used. Run /cm connect again for a new one.')
   }
-  if (!sameOrigin(normalizeApiUrl(answer.apiUrl) ?? '', f.api)) {
+  if (answer.apiUrl !== undefined && !sameOrigin(normalizeApiUrl(answer.apiUrl) ?? '', f.api)) {
     return finish($, f, `Talkif's answer named another API address than ${f.api}, so the credential was not used. Revoke "${f.name}" in Build → Agent Bridge and run /cm connect again.`)
   }
   // The approved answer is one time: the flow ends here whatever happens next.
