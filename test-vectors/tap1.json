@@ -122,6 +122,24 @@
     "proofInput": "tap/1-session\n0192f000-0000-7000-8000-0000000000dd",
     "proof": "Vwintgq5DYHj6GI5L7MDB2tJ46DLexBzqPujOXVsin0"
   },
+  "recap": {
+    "agentId": "0192f000-0000-7000-8000-0000000000aa",
+    "sessionId": "0192f000-0000-4000-8000-0000000000ef",
+    "seq": 1,
+    "recipient": "0192f000-0000-7000-8000-0000000000bb",
+    "text": "fixing the iOS login screen",
+    "messageId": "recap:0192f000-0000-4000-8000-0000000000ef:1",
+    "aad": "tap/1-recap|0192f000-0000-7000-8000-0000000000aa|0192f000-0000-4000-8000-0000000000ef|1|0192f000-0000-7000-8000-0000000000bb",
+    "ct": {
+      "v": 1,
+      "alg": "X25519-HKDF-SHA256-A256GCM",
+      "epk": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "nonce": "TE1OT1BRUlNUVVZX",
+      "ct": "ojHpTy66I_ojKOMizJnXhv-wdU-uIifTSZ1cLUzPQXrqQ1gASuIAesAMCA"
+    },
+    "sigInput": "tap/1-recap-sig\ntap/1-recap|0192f000-0000-7000-8000-0000000000aa|0192f000-0000-4000-8000-0000000000ef|1|0192f000-0000-7000-8000-0000000000bb\n35043fd4a220e09a631d98e31d8c9bacc1f1e1906af92511d280bff77adb4561",
+    "sig": "gOdd56Xn4YOmzfQ5uZ__n_GD-9mHugKM0LLC47Pus8owLCrB3a4iLNRuu_LCiF2_XWP77y54GIfoSda2uFiJBA"
+  },
   "action": {
     "agentId": "0192f000-0000-7000-8000-0000000000bb",
     "taskId": "0192f000-0000-7000-8000-000000000020",

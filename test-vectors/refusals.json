@@ -64,6 +64,10 @@
     "frame_too_large",
     "hello_required",
     "channel_sockets_limit",
-    "socket_person_mismatch"
+    "socket_person_mismatch",
+    "session_not_found",
+    "sessions_limit",
+    "session_label_taken",
+    "session_meta_invalid"
   ]
 }
