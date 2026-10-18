@@ -140,6 +140,7 @@ When Talkif refuses the key (Connectors off, a missing scope, an IP allowlist), 
 | `/cm on all` · `/cm off all` | all open sessions on / off |
 | `/cm default on` · `/cm default off` | how new sessions start |
 | `/cm setup` | check the connection and show what's missing (also shows the key, flow, accounts and folders in use) |
+| `/cm connect [name]` | connect this session to Agent Bridge: shows a code, you approve it in the Talkif dashboard |
 | `/cm traffic` | see what went back and forth (needs the `debug` option) |
 
 Advanced:
@@ -163,7 +164,7 @@ Change them in `/config` → call-me. The API key is in `/plugin` → Installed 
 | `callback` | on | ring you when a task from a call ends after you hung up |
 | `parallel` | off | queue more tasks from a call while one runs, instead of saying "still on the last task" |
 | `debug` | off | record this session's traffic for `/cm traffic` |
-| `agentKey` | empty | Agent Bridge credential (`tif_agent_…`), kept in the keychain. Empty: Agent Bridge is off |
+| `agentKey` | empty | Agent Bridge credential (`tif_agent_…`), kept in the keychain; `/cm connect` fills it. Empty: Agent Bridge is off unless `/cm connect` stored a credential file for this folder |
 | `peerTasks` | `read-only` | `read-only`: tasks from your other connected agents never change anything here. `follow-hub`: they may make local changes when you allow it in Talkif |
 | `voiceApprovals` | `deny` | `allow`: a yes said on your own Talkif call approves an outward action (push, merge, sending) here; never secrets, payments or deploys |
 
@@ -171,7 +172,13 @@ Change them in `/config` → call-me. The API key is in `/plugin` → Installed 
 
 Early access: Talkif turns it on for your account. Your coding sessions, on any of your machines, and your phone agent become **connected agents**: they can ask each other questions, send notes and give each other tasks, through Talkif.
 
-**Setup.** In the Talkif dashboard (Build → Agent Bridge) add an agent for this machine and copy its credential (`tif_agent_…`, shown once). Paste it in `/plugin` → Installed → call-me → Configure options → **Agent Bridge credential**. The first session that connects binds the agent to its folder (the git repository, else the folder); sessions in other folders stay out of it. `/talkif agent bind` moves the binding to the current folder.
+**Setup: one command.** In the session you want to connect, run `/cm connect` (or `/cm connect <name>`; the default name is the folder's). It shows a code like `BCDF-GHJK` and opens the Talkif dashboard in your browser (on other systems it shows the link). Sign in, check that the page shows **the same code** as your terminal, and press **Approve**. Talkif creates the agent (read-only to start) and hands its credential to this session only; your browser never sees it. The session connects by itself; the only other step is confirming your passkey fingerprints in the Agent Bridge pane, if it asks. Approve only a code you started yourself: a link someone sent you is not yours to approve. The code works once and expires after 10 minutes.
+
+The credential goes to the **Agent Bridge credential** option, which Claude Code keeps in your keychain. If that option already holds another agent, or Claude Code does not let the plugin set it, it goes to `~/.config/talkif/agents/<agent id>.credential`, a file only you can read; the plugin uses that file in this folder from then on. Neither is ever written to `settings.json` or a log.
+
+On a machine without a browser you can still add the agent in the dashboard (Build → Agent Bridge), copy its credential (`tif_agent_…`, shown once) and paste it in `/plugin` → Installed → call-me → Configure options → **Agent Bridge credential**.
+
+The first session that connects binds the agent to its folder (the git repository, else the folder); sessions in other folders stay out of it. `/talkif agent bind` moves the binding to the current folder.
 
 **What Talkif sees.** Talkif relays messages and keeps who sent what to whom and when, never what they say: each message is encrypted on this machine for each recipient agent (X25519, HKDF-SHA256, AES-256-GCM) and signed (Ed25519). The keys are made here; the private ones stay in the macOS keychain (elsewhere a file only you can read, under `~/.config/talkif/agent/`). Text that looks like a secret is replaced with `[redacted]` before it is encrypted. Your phone agent is the one exception: Talkif holds its key, because it speaks on your calls.
 

@@ -17,6 +17,7 @@ import {
 } from './agent'
 import { CallTaskScope, readOnlyDenial } from './read-only'
 import { redactBody } from './secrets'
+import { cmConnect } from './connect'
 import { fenceUntrusted, untrustedNote } from './untrusted'
 import {
   DEV_ENV_FILE,
@@ -1078,6 +1079,8 @@ async function cmStatus($: EngineInterface): Promise<string> {
 }
 
 async function cmRun($: EngineInterface, args: string, columns: number): Promise<string> {
+  const connect = /^connect(?:\s+(.*))?$/i.exec(args.trim())
+  if (connect) return cmConnect($, connect[1] ?? '')
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
   const [a, b, extra] = words
   if (extra) return UNKNOWN_COMMAND

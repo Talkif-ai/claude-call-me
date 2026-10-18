@@ -418,6 +418,7 @@ const HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
   ['/cm on all | off all', 'all open sessions on or off'],
   ['/cm default on | off', 'how new sessions start'],
   ['/cm setup', "check the connection, show what's missing"],
+  ['/cm connect [name]', 'connect this session to Agent Bridge'],
   ['/cm traffic', 'what went back and forth (debug option)'],
 ]
 const HELP_ADVANCED: ReadonlyArray<readonly [string, string]> = [

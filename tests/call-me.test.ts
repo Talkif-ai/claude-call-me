@@ -293,7 +293,7 @@ test('/cm help: aligned two columns on a wide terminal, the common ones first', 
   const rows = lines.filter(l => l.trim().startsWith('/cm'))
   expect(new Set(rows.map(l => l.length - l.trimStart().length)).size).toBe(1)
   expect(new Set(rows.map(l => l.indexOf(l.trim().split(/ {2,}/u)[1] ?? ''))).size).toBe(1)
-  for (const cmd of ['/cm on | off', '/cm on all | off all', '/cm default on | off', '/cm setup', '/cm traffic', '/cm publish', '/cm latency']) {
+  for (const cmd of ['/cm on | off', '/cm on all | off all', '/cm default on | off', '/cm setup', '/cm connect [name]', '/cm traffic', '/cm publish', '/cm latency']) {
     expect(rows.some(l => l.trim().startsWith(`${cmd}  `))).toBe(true)
   }
   expect(UNKNOWN_COMMAND).toBe('Unknown command. See /cm help.')

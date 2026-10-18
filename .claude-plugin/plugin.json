@@ -59,7 +59,7 @@
     "agentKey": {
       "type": "string",
       "title": "Agent Bridge credential",
-      "description": "Agent Bridge credential (tif_agent_…) from Talkif settings. Makes this session one of your connected agents. Stored in your keychain, never in settings.json. Empty: Agent Bridge is off.",
+      "description": "Agent Bridge credential (tif_agent_…). /cm connect fills it for you; or paste one from the Talkif dashboard (Build → Agent Bridge). Makes this session one of your connected agents. Stored in your keychain, never in settings.json. Empty: Agent Bridge is off.",
       "sensitive": true
     },
     "peerTasks": {

@@ -431,11 +431,11 @@ test('setup: the agent credential, the API URL and where owner proofs come from'
 
 // ---- the engine end to end ----
 
-type Fake = { files: Map<string, string>; argv: string[][]; stdin: string[]; urls: string[]; tools: string[]; commands: string[]; prompts: string[]; status: string[] }
+type Fake = { files: Map<string, string>; argv: string[][]; stdin: string[]; urls: string[]; tools: string[]; commands: string[]; prompts: string[]; status: string[]; logs: string[] }
 
 /** A machine for the plugin: files kept in memory, the shell answered like Linux. */
 function fakeMachine(on: On, os: 'Linux' | 'Darwin' = 'Linux', fileMode = '600'): Fake {
-  const f: Fake = { files: new Map(), argv: [], stdin: [], urls: [], tools: [], commands: [], prompts: [], status: [] }
+  const f: Fake = { files: new Map(), argv: [], stdin: [], urls: [], tools: [], commands: [], prompts: [], status: [], logs: [] }
   const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', (_$, e) => {
     const argv = [...e.argv]
@@ -447,7 +447,7 @@ function fakeMachine(on: On, os: 'Linux' | 'Darwin' = 'Linux', fileMode = '600')
     if (cmd === 'id') return out('1000\n')
     if (cmd === 'stat') return out(`${fileMode} 1000\n`)
     if (cmd === 'hostname') return out('box\n')
-    if (cmd === 'sleep' || cmd === 'security') return out('')
+    if (cmd === 'sleep' || cmd === 'security' || cmd === 'open') return out('')
     // The lock: created only when it does not exist (`set -C`).
     if (cmd === 'sh' && argv[2]?.includes('set -C') && argv[4]) {
       if (f.files.has(argv[4])) return out('', 1)
@@ -469,7 +469,10 @@ function fakeMachine(on: On, os: 'Linux' | 'Darwin' = 'Linux', fileMode = '600')
   })
   on('session.id', () => ({ value: 'session-test' }))
   on('session.messages', () => ({ value: [] }))
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', (_$, e) => {
+    f.logs.push(e.text)
+    return { value: undefined }
+  })
   on('ui.status', (_$, e) => {
     f.status.push(JSON.stringify(e))
     return { value: undefined }
@@ -539,10 +542,10 @@ const R1 = '0192f000-0000-7000-8000-00000000e001'
 const D2 = '0192f000-0000-7000-8000-0000000000d2'
 const peerTask = (over: Json = {}): Json => ({ taskId: D2, requestId: R1, depth: 1, fromAgentId: P1, fromAgentName: 'Phone', toAgentId: A1, state: 'submitted', permission: 'local_write', granted: 'local_write', deadlineAt: FAR, ...over })
 
-function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'ask_everything' | 'read_only'; selfId?: string }) {
+function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'ask_everything' | 'read_only'; selfId?: string; connect?: (path: string, body: unknown) => ReturnType<typeof jsonAnswer> }) {
   const hub = {
     boxPublic: undefined as Uint8Array | undefined, nonce: T.randomBytes(32), sid: '0192f000-0000-7000-8000-00000000c0de', proofs: [] as (string | undefined)[], inbox: [] as unknown[], approvals: [] as Json[], approvalState: 'denied', redeemed: 0, statuses: [] as Json[], terminal: [] as Json[], hold: false, unproven: [] as string[],
-    tasks: { [D2]: peerTask() } as Record<string, Json>, posted: [] as Json[], postedTaskId: undefined as string | undefined, cancels: [] as string[], bids: [] as Json[], sessions: 0,
+    tasks: { [D2]: peerTask() } as Record<string, Json>, auth: [] as string[], posted: [] as Json[], postedTaskId: undefined as string | undefined, cancels: [] as string[], bids: [] as Json[], sessions: 0,
   }
   const held: Array<() => void> = []
   const waiting: Array<() => void> = []
@@ -553,6 +556,7 @@ function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'a
     const method = e.init?.method ?? 'GET'
     const headers = e.init?.headers ?? {}
     const body: unknown = e.init?.body ? JSON.parse(e.init.body) : undefined
+    if (opts.connect && url.pathname.startsWith('/api/v1/agent-connect/')) return opts.connect(url.pathname, body)
     if (!url.pathname.startsWith('/api/v1/me/agents')) return jsonAnswer(404, { code: 'not_found' })
     // Every agent POST/PUT carries an idempotency key; every route but four needs the proven session.
     if ((method === 'POST' || method === 'PUT') && !/^[A-Za-z0-9_-]{8,64}$/.test(headers['Idempotency-Key'] ?? '')) return jsonAnswer(400, { code: 'validation_failed' })
@@ -562,6 +566,7 @@ function fakeHub(on: On, f: Fake, peerKeys: T.KeyPair, opts: { mode: 'auto' | 'a
       return jsonAnswer(401, { code: 'token_invalid', meta: { refusal: 'session_invalid' } })
     }
     if (!/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/.test(headers.traceparent ?? '')) return jsonAnswer(400, { code: 'validation_failed' })
+    if (path === '/self' && method === 'GET') hub.auth.push(headers.Authorization ?? '')
     if (path === '/self' && method === 'GET') return jsonAnswer(200, { agentId: opts.selfId ?? A1, keySet: hub.boxPublic !== undefined, receiver: null, mode: opts.mode, granted: { localWrite: true }, paused: false, card: { name: 'laptop' } })
     if (path === '/self/key') {
       const b = body as { publicKey: string }
@@ -1064,4 +1069,179 @@ test('tiers: relative paths judged from every folder the shell may be in', async
   expect(shellCwdsAfter('cd ~', ['/repo'], '/repo')).toEqual(['/repo', undefined])
   expect(shellCwdsAfter('cd .. ', ['/repo'], '/repo')).toEqual(['/repo', undefined])
   expect(shellCwdsAfter('ls -la', ['/repo'], '/repo')).toEqual(['/repo'])
+})
+
+// ---- device connect (/cm connect) ----
+
+const cmText = async ($: Engine, args: string): Promise<string> => (await $.command.run({ command: 'cm', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })).text ?? ''
+const CONNECT_SECRET = `tif_connect_${'s'.repeat(43)}`
+const CONNECT_TOKEN = `tif_agent_${'T'.repeat(43)}`
+const VERIFY_URL = 'https://app.talkif.ai/connect/agent?code=BCDF-GHJK'
+
+/** The two public routes: start answers one code; poll answers what `answer()` says now. */
+function fakeConnect(answer: () => ReturnType<typeof jsonAnswer>, start: Json = {}) {
+  const seen = { starts: [] as unknown[], polls: [] as unknown[] }
+  const handler = (path: string, body: unknown) => {
+    if (path === '/api/v1/agent-connect/start') {
+      seen.starts.push(body)
+      return jsonAnswer(201, { userCode: 'BCDF-GHJK', deviceSecret: CONNECT_SECRET, verifyUrl: VERIFY_URL, expiresIn: 600, interval: 2, ...start })
+    }
+    seen.polls.push(body)
+    return answer()
+  }
+  return { seen, handler }
+}
+const approved = (over: Json = {}) => jsonAnswer(200, { status: 'approved', credential: { token: CONNECT_TOKEN, prefix: 'tif_agent_TTTT…TTTT' }, agentId: A1, apiUrl: 'https://api.talkif.ai', ...over })
+const configRows = (on: On, deny: string | undefined) => {
+  const sets: unknown[] = []
+  on('config.list', () => ({ value: [{ key: 'call-me.agentKey', label: 'Agent Bridge credential', kind: 'text', value: '', provider: { plugin: 'call-me', tier: 'user' }, isLocked: false }] }))
+  on('config.set', (_$, e) => {
+    sets.push(e.key)
+    return deny ? { deny } : { value: e.value }
+  })
+  return sets
+}
+
+test('/cm connect: code and page shown, browser opened, credential to a 0600 file when the secret field refuses, then the session connects', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const f = fakeMachine(on, 'Darwin')
+  let state: 'pending' | 'approved' = 'pending'
+  const c = fakeConnect(() => (state === 'pending' ? jsonAnswer(200, { status: 'pending' }) : approved()))
+  const sets = configRows(on, 'only its dialog changes it')
+  const { hub } = fakeHub(on, f, T.generateKeyPair(), { mode: 'auto', connect: c.handler })
+  await start($)
+  expect(f.commands).toEqual(['cm'])
+  const text = await cmText($, 'connect')
+  expect(text).toContain('Code:  BCDF-GHJK')
+  expect(text).toContain(`${VERIFY_URL}  (opened in your browser)`)
+  expect(c.seen.starts).toEqual([{ kind: 'claude_code', name: 'repo', machine: 'box', project: 'repo' }])
+  expect(f.argv).toContainEqual(['open', VERIFY_URL])
+  await clock.advance(2_000)
+  expect(c.seen.polls).toEqual([{ deviceSecret: CONNECT_SECRET }])
+  state = 'approved'
+  await clock.advance(2_000)
+  await clock.advance(1_000)
+  expect(sets).toEqual(['call-me.agentKey'])
+  expect(f.files.get(`/home/test/.config/talkif/agents/${A1}.credential`)).toBe(`${CONNECT_TOKEN}\n`)
+  // The session connected as that agent: the credential is its bearer, keys were made and the session proven.
+  expect(hub.auth).toContain(`Bearer ${CONNECT_TOKEN}`)
+  expect(hub.boxPublic?.length).toBe(32)
+  expect(f.tools).toContain('list_agents')
+  // Neither secret ever reaches argv or a log line; the poll stopped after the one-time answer.
+  for (const secret of [CONNECT_TOKEN, CONNECT_SECRET]) {
+    expect(f.argv.some(a => a.some(w => w.includes(secret)))).toBe(false)
+    expect(f.logs.some(l => l.includes(secret))).toBe(false)
+  }
+  const polls = c.seen.polls.length
+  await clock.advance(10_000)
+  expect(c.seen.polls.length).toBe(polls)
+  expect(await cmText($, 'connect')).toContain('already connected')
+})
+
+test('/cm connect: the secret field takes the credential when it accepts it (no file written)', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const f = fakeMachine(on)
+  const c = fakeConnect(() => approved())
+  const sets = configRows(on, undefined)
+  fakeHub(on, f, T.generateKeyPair(), { mode: 'auto', connect: c.handler })
+  await start($)
+  const text = await cmText($, 'connect laptop')
+  expect(text).not.toContain('opened in your browser')
+  expect(f.argv.some(a => a[0] === 'open')).toBe(false)
+  await clock.advance(2_000)
+  expect(sets).toEqual(['call-me.agentKey'])
+  expect([...f.files.keys()].some(k => k.endsWith('.credential'))).toBe(false)
+  expect(c.seen.starts).toEqual([{ kind: 'claude_code', name: 'laptop', machine: 'box', project: 'repo' }])
+})
+
+test('/cm connect: denied, expired, slow_down and an approved answer for another API address store nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const f = fakeMachine(on)
+  let next: () => ReturnType<typeof jsonAnswer> = () => jsonAnswer(429, { code: 'rate_limit_exceeded', meta: { refusal: 'slow_down' } })
+  const c = fakeConnect(() => next())
+  const sets = configRows(on, undefined)
+  fakeHub(on, f, T.generateKeyPair(), { mode: 'auto', connect: c.handler })
+  await start($)
+  expect(await cmText($, 'connect bad/name')).toContain('An agent name is')
+  expect(c.seen.starts).toEqual([])
+  await cmText($, 'connect')
+  await clock.advance(2_000)
+  expect(c.seen.polls.length).toBe(1)
+  // slow_down: the next poll waits 5 s longer.
+  await clock.advance(2_000)
+  expect(c.seen.polls.length).toBe(1)
+  next = () => jsonAnswer(200, { status: 'denied' })
+  await clock.advance(5_000)
+  expect(c.seen.polls.length).toBe(2)
+  expect(f.logs.some(l => l.includes('denied'))).toBe(true)
+  await cmText($, 'connect')
+  next = () => approved({ apiUrl: 'https://evil.example' })
+  await clock.advance(2_000)
+  expect(f.logs.some(l => l.includes('another API address'))).toBe(true)
+  await cmText($, 'connect')
+  next = () => jsonAnswer(200, { status: 'expired' })
+  await clock.advance(2_000)
+  expect(f.logs.some(l => l.includes('expired'))).toBe(true)
+  expect(sets).toEqual([])
+  expect([...f.files.keys()].some(k => k.endsWith('.credential'))).toBe(false)
+  expect(f.logs.some(l => l.includes(CONNECT_SECRET) || l.includes(CONNECT_TOKEN))).toBe(false)
+})
+
+test('/cm connect: a start answer with a page that is not the connect page for that code opens nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const f = fakeMachine(on, 'Darwin')
+  let verifyUrl = ''
+  const seen = { polls: 0 }
+  fakeHub(on, f, T.generateKeyPair(), {
+    mode: 'auto',
+    connect: path => {
+      if (path.endsWith('/poll')) seen.polls += 1
+      return jsonAnswer(201, { userCode: 'BCDF-GHJK', deviceSecret: CONNECT_SECRET, verifyUrl, expiresIn: 600, interval: 2 })
+    },
+  })
+  await start($)
+  for (const url of ['file:///Applications/Calculator.app', 'https://app.talkif.ai/connect/agent?code=XXXX-XXXX', '-a Terminal', 'https://app.talkif.ai/elsewhere?code=BCDF-GHJK', 'https://user:pw@app.talkif.ai/connect/agent?code=BCDF-GHJK']) {
+    verifyUrl = url
+    expect(await cmText($, 'connect')).toContain('not valid')
+    await clock.advance(4_000)
+  }
+  expect(seen.polls).toBe(0)
+  expect(f.argv.some(a => a[0] === 'open')).toBe(false)
+})
+
+test('a credential /cm connect stored in a file is used at session start when it is bound to this folder', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const f = fakeMachine(on)
+  const { hub } = fakeHub(on, f, T.generateKeyPair(), { mode: 'auto' })
+  f.files.set('/home/test/.config/talkif/agents', '')
+  f.files.set(`/home/test/.config/talkif/agents/${A1}.credential`, `${CONNECT_TOKEN}\n`)
+  f.files.set(`/home/test/.config/talkif/agent/${A1}.json`, JSON.stringify({ root: '/home/test/repo' }))
+  on('fs.list', () => ({ value: [{ name: `${A1}.credential`, kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false }, { name: 'laptop.credential', kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false }] }))
+  await start($)
+  await clock.advance(1_000)
+  expect(hub.auth).toContain(`Bearer ${CONNECT_TOKEN}`)
+  expect(f.tools).toContain('list_agents')
+})
+
+test('a credential /cm connect bound to this folder wins over the agentKey option; one bound elsewhere is never used', { options: { agentKey: 'tif_agent_FAKEFAKEFAKE' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const f = fakeMachine(on)
+  const { hub } = fakeHub(on, f, T.generateKeyPair(), { mode: 'auto' })
+  const OTHER = '0192f000-0000-7000-8000-00000000a002'
+  f.files.set('/home/test/.config/talkif/agents', '')
+  f.files.set(`/home/test/.config/talkif/agents/${OTHER}.credential`, `tif_agent_${'O'.repeat(43)}\n`)
+  f.files.set(`/home/test/.config/talkif/agent/${OTHER}.json`, JSON.stringify({ root: '/home/test/other' }))
+  f.files.set(`/home/test/.config/talkif/agents/${A1}.credential`, `${CONNECT_TOKEN}\n`)
+  f.files.set(`/home/test/.config/talkif/agent/${A1}.json`, JSON.stringify({ root: '/home/test/repo' }))
+  on('fs.list', () => ({ value: [OTHER, A1].map(id => ({ name: `${id}.credential`, kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false })) }))
+  await start($)
+  await clock.advance(1_000)
+  expect(hub.auth.every(a => a === `Bearer ${CONNECT_TOKEN}`)).toBe(true)
+  expect(hub.auth.length).toBeGreaterThan(0)
 })

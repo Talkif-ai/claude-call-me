@@ -15,7 +15,7 @@ import type { EngineInterface, On, PluginOptions, Timer, ToolCallInput } from 'c
 
 import type { AgentCard } from '../types'
 
-import { AGENT_KEY_PREFIX, DEV_ENV_FILES, agentRefusalReason, problemText, resolveAgentCredentials } from './config'
+import { AGENT_KEY_PREFIX, agentRefusalReason, problemText, resolveAgentCredentials } from './config'
 import type { AgentCredentials, Problem } from './config'
 import {
   OPEN_STATES,
@@ -40,9 +40,10 @@ import {
 } from './protocol'
 import type { A2AMessage, AgentStatus, Envelope, InboxItem, LocalCeiling, OwnerKey, Peer, PeerMode, PeerPin, Refusal, SelfInfo, TaskInfo } from './protocol'
 import { CallTaskScope, readOnlyDenial } from './read-only'
-import { actionHash, agentFingerprint, b64url, fromB64url, generateKeyPair, keyBlob, keysFromBlob, open, randomBytes, sessionAad, sessionProof, sha256Hex, toHex, uuidv7 } from './tap1'
+import { actionHash, agentFingerprint, b64url, fromB64url, generateKeyPair, open, randomBytes, sessionAad, sessionProof, sha256Hex, toHex, uuidv7 } from './tap1'
 import type { KeyPair } from './tap1'
 import { OwnSecrets } from './scrub'
+import { CREDENTIALS_DIR, checkedId, credentialPath, devFileText, fileCredentials, homeDir, loadPrivateKeys, readPrivateJson, run, storePrivateKeys, writePrivate } from './local-files'
 import { channelsOf, classifyAction, isTier, rank, shellCwdsAfter } from './tiers'
 import type { Channels, Tier } from './tiers'
 import { fenceUntrusted, peerNote } from './untrusted'
@@ -147,79 +148,6 @@ export function personalAgentStatus(): string | undefined {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const noPins = (): Record<string, PeerPin> => Object.create(null)
-
-// ---- local files and the secret store ----
-
-async function run($: EngineInterface, argv: string[], stdin?: string) {
-  return $.process.run(argv, stdin === undefined ? {} : { stdin })
-}
-
-let platform: string | undefined
-async function os($: EngineInterface): Promise<string> {
-  platform ??= (await run($, ['uname', '-s'])).stdout.trim()
-  return platform
-}
-
-/**
- * Write a file only its owner can read: created 0600 under umask 077 next to the
- * target, then renamed over it (no moment where it is readable by others), then
- * checked. `$.fs.write` has no mode, so this goes through the shell.
- */
-async function writePrivate($: EngineInterface, path: string, text: string): Promise<void> {
-  const res = await run($, ['sh', '-c', 'umask 077 && mkdir -p "$(dirname "$1")" && cat > "$1.tmp" && mv -f "$1.tmp" "$1"', 'sh', path], text)
-  if (res.exitCode !== 0) throw new Error(`could not write ${path}`)
-  if (!(await isPrivate($, path))) throw new Error(`${path} is readable by others; refusing to use it`)
-}
-
-/** Mode 0600 and owned by the current user. */
-async function isPrivate($: EngineInterface, path: string): Promise<boolean> {
-  const fmt = (await os($)) === 'Darwin' ? ['stat', '-f', '%Lp %u', path] : ['stat', '-c', '%a %u', path]
-  const [stat, id] = await Promise.all([run($, fmt), run($, ['id', '-u'])])
-  return stat.exitCode === 0 && id.exitCode === 0 && stat.stdout.trim() === `600 ${id.stdout.trim()}`
-}
-
-async function readPrivateJson($: EngineInterface, path: string): Promise<unknown> {
-  if (!(await $.fs.exists(path))) return undefined
-  if (!(await isPrivate($, path))) throw new Error(`${path} is readable by others; refusing to use it`)
-  try {
-    return JSON.parse(await $.fs.read(path))
-  } catch {
-    return undefined
-  }
-}
-
-const KEYCHAIN_SERVICE = 'talkif-agent'
-
-/** An agent id that names a file or a keychain entry here: a lowercase UUID only (the hub may be compromised). */
-function checkedId(agentId: string): string {
-  if (!isId(agentId)) throw new Error('Talkif sent an agent id that is not a UUID; refusing to use it')
-  return agentId
-}
-
-/** Both private keys, one hex blob: the macOS keychain, else a 0600 file. Never in argv, never in $.store. */
-export async function storePrivateKeys($: EngineInterface, dir: string, agentId: string, keys: KeyPair): Promise<void> {
-  const blob = keyBlob(keys)
-  const account = checkedId(agentId)
-  if ((await os($)) === 'Darwin') {
-    // `security -i` reads the whole command from stdin: the secret is never in the process list.
-    // Every word is a fixed name, a UUID or hex (checked above): nothing can add a command.
-    const res = await run($, ['security', '-i'], `add-generic-password -U -s "${KEYCHAIN_SERVICE}" -a "${account}" -w "${blob}"\n`)
-    if (res.exitCode !== 0) throw new Error('could not store the agent key in the keychain')
-    return
-  }
-  await writePrivate($, `${dir}/${account}.key`, `${blob}\n`)
-}
-
-export async function loadPrivateKeys($: EngineInterface, dir: string, agentId: string): Promise<KeyPair | undefined> {
-  if ((await os($)) === 'Darwin') {
-    const res = await run($, ['security', 'find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', checkedId(agentId), '-w'])
-    return res.exitCode === 0 ? keysFromBlob(res.stdout) : undefined
-  }
-  const path = `${dir}/${checkedId(agentId)}.key`
-  if (!(await $.fs.exists(path))) return undefined
-  if (!(await isPrivate($, path))) throw new Error(`${path} is readable by others; refusing to use it`)
-  return keysFromBlob(await $.fs.read(path))
-}
 
 // ---- talking to Talkif ----
 
@@ -1193,7 +1121,7 @@ async function standby($: EngineInterface) {
 
 async function agentCommand($: EngineInterface, args: string): Promise<string> {
   const r = rt
-  if (!r) return 'Agent Bridge is off: no agent credential is set (agentKey in /plugin → call-me → Configure options).'
+  if (!r) return 'Agent Bridge is off: no agent credential is set. Run /cm connect to connect this session.'
   const [a, b, c, extra] = args.trim().split(/\s+/).filter(Boolean)
   if (a !== 'agent' || extra) return 'Commands: /talkif agent · /talkif agent bind · /talkif agent trust-owner · /talkif agent trust <agent id>'
   if (!b) {
@@ -1256,24 +1184,74 @@ let agentKeyOption = ''
 let apiUrlOption = ''
 let peerCeilingOption: LocalCeiling = 'read-only'
 let voiceApprovalsOption: 'deny' | 'allow' = 'deny'
+/** A credential /cm connect brought into this activation (kept in memory only). */
+let connectedKey: string | undefined
+let sessionCwd: string | undefined
+let talkifRegistered = false
+
+/** The API URL Agent Bridge talks to (the apiUrl option, else TALKIF_API_URL in the developer file, else Talkif). */
+export async function agentApiUrl($: EngineInterface): Promise<{ ok: true; url: string } | { ok: false; problem: Problem }> {
+  const resolved = resolveAgentCredentials({ agentKey: AGENT_KEY_PREFIX, apiUrl: apiUrlOption }, await devFileText($, await homeDir($)))
+  return resolved?.ok ? { ok: true, url: resolved.credentials.url } : { ok: false, problem: resolved?.problem ?? { reason: 'no API URL', next: 'check the API URL option' } }
+}
+
+/** This session's folder (git toplevel, else the start folder), as the binding names it. */
+export async function agentSessionRoot($: EngineInterface): Promise<string> {
+  return sessionRoot($, sessionCwd ?? '.')
+}
+
+/** Whether /cm connect may connect this session now, and if not why. */
+export function connectBlocker(): string | undefined {
+  const r = rt
+  if (!r || r.problem || r.bound === 'elsewhere' || r.stopped) return undefined
+  if (r.sid) return `This session is already connected to Agent Bridge${r.self?.name ? ` as ${r.self.name}` : ''}. /talkif agent shows it.`
+  if (r.note === STANDBY_NOTE) return 'Another session on this machine already acts as the connected agent for this folder.'
+  return 'Agent Bridge is connecting this session already; /talkif agent shows how far it got.'
+}
+
+/**
+ * The credential /cm connect received: into the engine's secret field when that
+ * field is empty (the plugin then reloads and connects with it), else into a
+ * 0600 file read at session start; then this session connects with it.
+ * Returns what to tell the person. The token never reaches a log, $.store or argv.
+ */
+export async function useConnectedCredential($: EngineInterface, token: string, agentId: string): Promise<string> {
+  if (!agentKeyOption.trim()) {
+    const row = (await $.config.list().catch(() => [])).find(r => r.key.endsWith('.agentKey') && r.provider.plugin.split('@')[0] === 'call-me')
+    if (row) {
+      const set = await $.config.set({ key: row.key, value: token }).catch(() => ({ deny: 'not stored' }))
+      if (!set.deny) return 'stored in your keychain (the agentKey option)'
+    }
+  }
+  const home = await homeDir($)
+  await writePrivate($, credentialPath(home, agentId), `${token}\n`)
+  pollTimer?.cancel()
+  pollTimer = undefined
+  rt = undefined
+  connectedKey = token
+  await agentSessionStart($, sessionCwd ?? '.')
+  return `stored in ${credentialPath(home, agentId).replace(home, '~')} (only you can read it)`
+}
 
 /** Session start: decide whether this session is a connected agent, and start its loop. */
 export async function agentSessionStart($: EngineInterface, cwd: string): Promise<void> {
+  sessionCwd = cwd
   try {
-    const home = (await $.process.run(['printenv', 'HOME'])).stdout.trim()
-    let devFile: string | undefined
-    if (!agentKeyOption.trim()) {
-      for (const name of DEV_ENV_FILES) {
-        if (await $.fs.exists(`${home}/${name}`)) {
-          devFile = await $.fs.read(`${home}/${name}`)
-          break
-        }
-      }
-    }
-    const resolved = resolveAgentCredentials({ agentKey: agentKeyOption, apiUrl: apiUrlOption }, devFile)
+    const home = await homeDir($)
+    const devFile = await devFileText($, home)
+    // Without credential files (no /cm connect yet) the folder is looked up only when needed.
+    const hasFiles = !connectedKey && (await $.fs.exists(`${home}/${CREDENTIALS_DIR}`))
+    let root = hasFiles ? await sessionRoot($, cwd) : undefined
+    // A credential /cm connect stored for this very folder wins (it is the newest
+    // for it); one bound nowhere is used only when no other credential is set.
+    const files = root === undefined ? {} : await fileCredentials($, home, root)
+    const fromOption = !connectedKey && !files.bound && agentKeyOption.trim() !== ''
+    const key = connectedKey ?? files.bound ?? agentKeyOption
+    let resolved = resolveAgentCredentials({ agentKey: key, apiUrl: apiUrlOption }, fromOption ? undefined : devFile)
+    if (resolved === undefined && files.unbound) resolved = resolveAgentCredentials({ agentKey: files.unbound, apiUrl: apiUrlOption }, devFile)
     // No agent credential: Agent Bridge stays entirely off.
     if (resolved === undefined) return
-    const root = await sessionRoot($, cwd)
+    root ??= await sessionRoot($, cwd)
     // The Bash tool's shell starts in the session's folder (real path), unknown when outside the root.
     const start = (await $.fs.stat(cwd, { resolve: true }).catch(() => undefined))?.realPath ?? cwd
     const startCwd = start.replace(/\/+$/, '') || '/'
@@ -1311,7 +1289,10 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
       approvals: 0,
       toolsRegistered: false,
     }
-    await $.command.register({ name: 'talkif', description: 'Talkif Agent Bridge: /talkif agent shows this session as a connected agent.' })
+    if (!talkifRegistered) {
+      await $.command.register({ name: 'talkif', description: 'Talkif Agent Bridge: /talkif agent shows this session as a connected agent.' })
+      talkifRegistered = true
+    }
     if (!resolved.ok) {
       $.ui.log(`call-me (Agent Bridge): ${problemText(resolved.problem)}`)
       await refreshStatus($)
