@@ -140,6 +140,29 @@
     "sigInput": "tap/1-recap-sig\ntap/1-recap|0192f000-0000-7000-8000-0000000000aa|0192f000-0000-4000-8000-0000000000ef|1|0192f000-0000-7000-8000-0000000000bb\n35043fd4a220e09a631d98e31d8c9bacc1f1e1906af92511d280bff77adb4561",
     "sig": "gOdd56Xn4YOmzfQ5uZ__n_GD-9mHugKM0LLC47Pus8owLCrB3a4iLNRuu_LCiF2_XWP77y54GIfoSda2uFiJBA"
   },
+  "recapViewer": {
+    "agentId": "0192f000-0000-7000-8000-0000000000aa",
+    "sessionId": "0192f000-0000-4000-8000-0000000000ef",
+    "seq": 1,
+    "viewerId": "0192f000-0000-7000-8000-0000000000f1",
+    "viewerSecret": "5858585858585858585858585858585858585858585858585858585858585858",
+    "viewerPublic": "TIUfxQRqlJPAaY2at9oDdru53rbb_O3E3Ih7X_onmms",
+    "viewerFingerprint": "6698 960b b2e5 bda7",
+    "text": "fixing the iOS login screen",
+    "messageId": "recap-viewer:0192f000-0000-4000-8000-0000000000ef:1",
+    "aad": "tap/1-recap-viewer|0192f000-0000-7000-8000-0000000000aa|0192f000-0000-4000-8000-0000000000ef|1|0192f000-0000-7000-8000-0000000000f1",
+    "ct": {
+      "v": 1,
+      "alg": "X25519-HKDF-SHA256-A256GCM",
+      "epk": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "nonce": "WFlaW1xdXl9gYWJj",
+      "ct": "60ruVI2bFg_WH7keSpchhyjWCi8qlu4ylu9w_zFg-_iwubet798IqSDYAg"
+    },
+    "sigInput": "tap/1-recap-viewer-sig\ntap/1-recap-viewer|0192f000-0000-7000-8000-0000000000aa|0192f000-0000-4000-8000-0000000000ef|1|0192f000-0000-7000-8000-0000000000f1\n93a5294cf29c7a4061966ce16958eb09c45cb92ddf6e3117cf4c13796175323d",
+    "sig": "4HOEtVCMIudbTkDI8S-yy5vir7xXhFngpIgPkiIkYwKosKg7G-iOipjJjPWPN42MQ-_OIuehatJrmEbN9XYrBg",
+    "challengeInput": "tap/1-viewer\nTIUfxQRqlJPAaY2at9oDdru53rbb_O3E3Ih7X_onmms",
+    "challenge": "5RyWMI0kvR3zGR6UNdy00u-hsZF28mFI5BFqJtqv6Q0"
+  },
   "action": {
     "agentId": "0192f000-0000-7000-8000-0000000000bb",
     "taskId": "0192f000-0000-7000-8000-000000000020",

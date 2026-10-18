@@ -68,6 +68,9 @@
     "session_not_found",
     "sessions_limit",
     "session_label_taken",
-    "session_meta_invalid"
+    "session_meta_invalid",
+    "viewers_limit",
+    "viewer_not_found",
+    "viewer_proof_invalid"
   ]
 }
