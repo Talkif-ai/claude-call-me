@@ -59,6 +59,11 @@
     "hidden_characters",
     "connect_code_invalid",
     "connect_already_decided",
-    "slow_down"
+    "slow_down",
+    "invalid_frame",
+    "frame_too_large",
+    "hello_required",
+    "channel_sockets_limit",
+    "socket_person_mismatch"
   ]
 }
