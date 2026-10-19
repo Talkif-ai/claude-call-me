@@ -411,7 +411,10 @@ function fakeTalkif(on: On) {
     if (path === '/flows/flow-1') return json(200, { id: 'flow-1', name: 'Interviewer', status: 'PUBLISHED', definition: FLOW_DEF })
     return json(404, { code: 'not_found' })
   })
-  on('process.run', ($, e) => ({ value: { exitCode: e.argv[0] === 'printenv' ? 0 : 1, stdout: e.argv[0] === 'printenv' ? '/home/test\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', ($, e) => {
+    const home = e.argv[0] === 'printenv' && (e.argv[1] === 'HOME' || e.argv[1] === undefined)
+    return { value: { exitCode: home ? 0 : 1, stdout: home ? '/home/test\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   on('fs.exists', () => ({ value: false }))
   on('fs.write', () => ({ value: undefined }))
   on('session.id', () => ({ value: 'session-test' }))

@@ -442,7 +442,7 @@ function fakeMachine(on: On, os: 'Linux' | 'Darwin' = 'Linux', fileMode = '600')
     f.argv.push(argv)
     if (e.init?.stdin !== undefined) f.stdin.push(e.init.stdin)
     const [cmd] = argv
-    if (cmd === 'printenv') return out('/home/test\n')
+    if (cmd === 'printenv') return argv[1] === 'HOME' || argv[1] === undefined ? out('/home/test\n') : out('', 1)
     if (cmd === 'uname') return out(`${os}\n`)
     if (cmd === 'id') return out('1000\n')
     if (cmd === 'stat') return out(`${fileMode} 1000\n`)

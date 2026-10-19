@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.29.1 — 2026-10-19
+
+- **A conversation hosted by the talkif-agents daemon is one session.** Inside a conversation the daemon keeps without a window (`talkif-agents hosted`, 0.6.0; `TALKIF_AGENTS_HOSTED` in its environment), the plugin no longer registers a session of its own with the daemon: the daemon takes that conversation's items itself. Before, it would have shown up twice and could have taken items meant for the hosted session.
+
 ## 0.29.0 — 2026-10-19
 
 - **A question to this window is answered from this window, even while it works.** With `talkif-agents` 0.5.2 or newer, a read-only question another agent sends to this window through the local daemon is answered at once by a side agent of this conversation: a fork of the conversation as it stands, with every tool denied and a strict read-only prompt (the question fenced as untrusted data). The main conversation goes on untouched. Before, a question that arrived while the window was busy waited behind its turn and was often answered by the daemon's separate headless run, without this window's context, while it still looked like this window's answer. The answer goes back to the daemon marked as this window's side answer, and a short log line shows it was sent. When the fork cannot answer (nothing to fork yet in a new session, an API error), the question runs as a read-only turn of the window as before. Board jobs and write jobs always run in the main conversation.

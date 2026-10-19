@@ -31,14 +31,14 @@ type Daemon = {
 }
 
 /** A machine whose local daemon answers, and a fake helper child the test writes events into. */
-function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean } = {}): Daemon {
+function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean; hosted?: string } = {}): Daemon {
   const d: Daemon = { emit: () => undefined, calls: [], argv: [], spawned: [], urls: [], prompts: [], tools: [], commands: [], logs: [], status: [], handed: [] }
   const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', (_$, e) => {
     const argv = [...e.argv]
     d.argv.push(argv)
     const [cmd] = argv
-    if (cmd === 'printenv') return out('/home/test\n')
+    if (cmd === 'printenv') return argv[1] === 'HOME' || argv[1] === undefined ? out('/home/test\n') : argv[1] === 'TALKIF_AGENTS_HOSTED' && opts.hosted ? out(`${opts.hosted}\n`) : out('', 1)
     if (cmd === 'uname') return out('Linux\n')
     if (cmd === 'sleep') return out('')
     if (cmd === 'sh' && (argv[2] ?? '').includes('cat >> "$1"')) {
@@ -115,7 +115,7 @@ function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean } = {})
 const denied = (r: unknown): string | undefined => (typeof r === 'object' && r !== null && 'deny' in r && typeof r.deny === 'string' ? r.deny : undefined)
 const ran = (r: unknown): unknown => (typeof r === 'object' && r !== null && 'result' in r ? r.result : undefined)
 
-async function registered($: Engine, on: On, opts: { statusOk?: boolean; socket?: boolean; attached?: boolean } = {}) {
+async function registered($: Engine, on: On, opts: { statusOk?: boolean; socket?: boolean; attached?: boolean; hosted?: string } = {}) {
   const clock = mock.clock(on)
   mock.store(on)
   const d = fakeDaemon(on, opts)
@@ -155,6 +155,12 @@ test('daemon running: this session registers through the helper; no hub request,
   const shown = await $.command.run({ command: 'talkif', args: 'agent', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
   expect(shown.text).toMatch(/local Agent Bridge daemon/)
   expect(shown.text).toMatch(/repo @ main/)
+})
+
+test('inside a conversation the daemon hosts (TALKIF_AGENTS_HOSTED): no helper, no session of its own', async ($, on) => {
+  const { d } = await registered($, on, { hosted: SID })
+  expect(d.spawned).toEqual([])
+  expect(d.calls.some(c => c.op === 'status')).toBe(false)
 })
 
 test('no daemon answering (socket gone, or status fails): no helper starts', async ($, on) => {

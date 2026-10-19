@@ -1240,6 +1240,10 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
     const home = await homeDir($)
     // The local talkif-agents daemon answers on its socket: this session goes through it
     // instead of the hub (the daemon holds the agent's keys and its hub connection).
+    // A conversation the talkif-agents daemon hosts (TALKIF_AGENTS_HOSTED): the daemon itself takes
+    // its items and answers for it; this plugin registers nothing (no second session for one conversation).
+    const hosted = (await $.process.run(['printenv', 'TALKIF_AGENTS_HOSTED']).catch(() => undefined))?.stdout.trim()
+    if (hosted) return
     const socket = connectedKey ? undefined : await daemonSocket($, home)
     if (socket) {
       const root = await sessionRoot($, cwd)
