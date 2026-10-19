@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.28.1 — 2026-10-19
+
+- **A board job claimed again is no longer lost.** The handed log recorded items by message id alone, and the daemon sends a new claim of the same board job with the same message id. When a job was claimed again after an earlier hand-off, the plugin confirmed it to the daemon without showing it, and the new claim never reached a window. A board job is now recorded per claim (message id, task id and the time the daemon received that claim); a repeat of the same claim is still confirmed without being shown twice. Messages and plain tasks are recorded by message id as before.
+- The shared test vectors are unchanged.
+
 ## 0.28.0 — 2026-10-19
 
 - **Nothing is lost between the local daemon and this window.** With `talkif-agents` 0.5.0 or newer, an item the daemon pushes to this window counts as delivered only after the window has it: the plugin writes its id to a handed log (`~/.config/talkif/agent/handed-<session>.log`, only you can read it, entries kept a day) after the turn was submitted or the item was shown, and only then confirms it to the daemon, which only then tells Talkif. An item the window did not confirm is pushed again; one already in the handed log (also from an earlier session of this computer) is confirmed without being shown twice. With an older daemon nothing changes.

@@ -2,7 +2,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { daemonTaskPrompt, parseEntry, WRITE_JOB_REFUSED, writeAllowed } from '../hooks/daemon-bridge'
+import { daemonTaskPrompt, deliveryKeyOf, parseEntry, WRITE_JOB_REFUSED, writeAllowed } from '../hooks/daemon-bridge'
 import { DAEMON_HELPER_JS } from '../hooks/daemon-helper'
 import { VECTOR_FILES } from './vectors'
 
@@ -340,6 +340,43 @@ test('delivery confirmation: an item goes into the handed log only after it was 
   expect(d.handed.map(h => h.line.split(' ')[1]?.trim())).toEqual(['m-1', 'm-1', 'm-2'])
   // Nothing peer-sent on a command line: the id goes on stdin.
   expect(d.argv.some(a => a.some(w => w.includes('m-2')))).toBe(false)
+})
+
+test('delivery confirmation: a new claim of a board job (same messageId, new receivedAt) is shown again; a re-push of the same claim is not', { options: { peerTasks: 'follow-hub' } }, async ($, on) => {
+  const { clock, d } = await registered($, on)
+  const first = taskItem({ job: true, receivedAt: '2026-10-19T10:00:00.000Z', pushId: '0192f000-0000-4000-8000-0000000000c1' })
+  d.emit({ t: 'items', items: [first] })
+  await clock.advance(10)
+  const prompt = d.prompts.find(p => p.startsWith(`[peer-task:${TASK}]`)) ?? ''
+  await $.turn.start({ text: prompt, turnId: 'turn-1' })
+  await complete($, 'turn-1', 'Done.')
+  // The same claim pushed again: confirmed, not shown.
+  d.emit({ t: 'items', items: [{ ...first, pushId: '0192f000-0000-4000-8000-0000000000c2', attempt: 2, redelivered: true }] })
+  await clock.advance(10)
+  expect(d.prompts.filter(p => p.startsWith('[peer-task:')).length).toBe(1)
+  // The job claimed again (the daemon buffers the new claim as a new item): shown.
+  d.emit({ t: 'items', items: [taskItem({ job: true, receivedAt: '2026-10-19T11:00:00.000Z', pushId: '0192f000-0000-4000-8000-0000000000c3' })] })
+  await clock.advance(10)
+  expect(d.prompts.filter(p => p.startsWith('[peer-task:')).length).toBe(2)
+  expect(d.handed.map(h => h.line.split(' ')[1]?.trim())).toEqual([
+    `m-1#job:${TASK}:2026-10-19T10:00:00.000Z`,
+    `m-1#job:${TASK}:2026-10-19T10:00:00.000Z`,
+    `m-1#job:${TASK}:2026-10-19T11:00:00.000Z`,
+  ])
+})
+
+test('delivery key: a job by messageId, taskId and receivedAt, anything else by messageId; the helper keys the same way', () => {
+  // The helper runs as a separate node process (no eval here): its rule is checked by its source.
+  expect(DAEMON_HELPER_JS).toMatch(/item\.job === true && typeof item\.taskId === 'string' && UUID\.test\(item\.taskId\) && typeof item\.receivedAt === 'string' && RECEIVED_AT\.test\(item\.receivedAt\)/)
+  expect(DAEMON_HELPER_JS).toMatch(/return item\.messageId \+ '#job:' \+ item\.taskId \+ ':' \+ item\.receivedAt/)
+  expect(DAEMON_HELPER_JS).toMatch(/const id = keyOf\(item\)/)
+  expect(DAEMON_HELPER_JS).toMatch(/handed\.has\(p\.key\)/)
+  expect(deliveryKeyOf(taskItem())).toBe('m-1')
+  expect(deliveryKeyOf(taskItem({ job: true }))).toBe(`m-1#job:${TASK}:2026-10-19T10:00:00Z`)
+  expect(deliveryKeyOf(taskItem({ job: true, receivedAt: 'yesterday' }))).toBe('m-1')
+  expect(deliveryKeyOf(taskItem({ job: true, taskId: 'not-an-id' }))).toBe('m-1')
+  expect(deliveryKeyOf({ messageId: 'bad id', kind: 'message' })).toBe(undefined)
+  expect(deliveryKeyOf(null)).toBe(undefined)
 })
 
 test('delivery confirmation: a handed log outside this session is ignored (nothing written)', async ($, on) => {

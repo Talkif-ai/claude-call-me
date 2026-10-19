@@ -16,10 +16,10 @@
 //                                    one lives with its MCP server.
 //                                    Delivery confirmation (daemon ≥ 0.5): subscribed with
 //                                    confirm, each pushed item has a pushId; the item counts as
-//                                    delivered only once the plugin wrote its messageId to the
-//                                    handed log (after it handed the item to the window). This
+//                                    delivered only once the plugin wrote its delivery key to
+//                                    the handed log (after it handed the item to the window). This
 //                                    process then sends `delivered` for it; an item whose
-//                                    messageId is already in the log is confirmed without being
+//                                    key is already in the log is confirmed without being
 //                                    shown again (exactly once, also across restarts).
 //   call <socket>                    one request read from stdin as {op, args}; one JSON
 //                                    line {ok, result | error} on stdout.
@@ -151,9 +151,21 @@ const open = path =>
     })
   })
 
-// The handed log (one "<ms> <messageId>" per line, 0600): what this session's window already has.
+// The handed log (one "<ms> <delivery key>" per line, 0600): what this session's window already has.
 const HANDED_KEEP_MS = 24 * 3600 * 1000
 const MESSAGE_ID = /^[A-Za-z0-9:._-]{1,128}$/
+const DELIVERY_KEY = /^[A-Za-z0-9:#._-]{1,256}$/
+const RECEIVED_AT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,9})?Z$/
+// The key of one pushed item in the handed log (the plugin's deliveryKeyOf, same rule): a board
+// job comes once per claim, and a new claim of the same job is a new item with its own
+// receivedAt, so a job is keyed by messageId, taskId and receivedAt; anything else by messageId.
+const keyOf = item => {
+  if (!item || typeof item !== 'object' || typeof item.messageId !== 'string' || !MESSAGE_ID.test(item.messageId)) return undefined
+  if (item.job === true && typeof item.taskId === 'string' && UUID.test(item.taskId) && typeof item.receivedAt === 'string' && RECEIVED_AT.test(item.receivedAt)) {
+    return item.messageId + '#job:' + item.taskId + ':' + item.receivedAt
+  }
+  return item.messageId
+}
 const handedLogOf = session => path.join(os.homedir(), '.config', 'talkif', 'agent', 'handed-' + session + '.log')
 
 // What the windows of this computer already have: this session's log, and the logs of the
@@ -176,7 +188,7 @@ class Handed {
       try {
         for (const line of fs.readFileSync(other, 'utf8').split('\n')) {
           const [at, id] = line.split(' ')
-          if (!id || !MESSAGE_ID.test(id) || !(now - Number(at) < HANDED_KEEP_MS)) continue
+          if (!id || !DELIVERY_KEY.test(id) || !(now - Number(at) < HANDED_KEEP_MS)) continue
           fresh = true
           this.ids.add(id)
           if (other === file) keep.push(line)
@@ -212,7 +224,7 @@ class Handed {
       if (end < 0) return
       for (const line of text.slice(0, end).split('\n')) {
         const id = line.split(' ')[1]
-        if (id && MESSAGE_ID.test(id)) this.ids.add(id)
+        if (id && DELIVERY_KEY.test(id)) this.ids.add(id)
       }
       this.offset += Buffer.byteLength(text.slice(0, end + 1))
     } finally {
@@ -224,7 +236,7 @@ class Handed {
   }
 }
 
-// Pushed items waiting for the window: pushId → { messageId, at }. Confirmed in batches of ten.
+// Pushed items waiting for the window: pushId → { key, at }. Confirmed in batches of ten.
 const confirmer = (l, session, handed) => {
   const pending = new Map()
   let timer
@@ -233,7 +245,7 @@ const confirmer = (l, session, handed) => {
     const now = Date.now()
     const done = []
     for (const [pushId, p] of pending) {
-      if (handed.has(p.messageId)) done.push(pushId)
+      if (handed.has(p.key)) done.push(pushId)
       // The daemon pushes it again with a new pushId after its wait: this one is gone.
       else if (now - p.at > 35000) pending.delete(pushId)
     }
@@ -252,13 +264,13 @@ const confirmer = (l, session, handed) => {
     take(items) {
       const show = []
       for (const item of items) {
-        const id = item && typeof item.messageId === 'string' ? item.messageId : undefined
+        const id = keyOf(item)
         const pushId = item && typeof item.pushId === 'string' && UUID.test(item.pushId) ? item.pushId : undefined
         if (!pushId || !id) {
           show.push(item)
           continue
         }
-        pending.set(pushId, { messageId: id, at: Date.now() })
+        pending.set(pushId, { key: id, at: Date.now() })
         if (!handed.has(id)) show.push(item)
       }
       if (pending.size && !timer) timer = setInterval(flush, 100)

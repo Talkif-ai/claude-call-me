@@ -53,6 +53,24 @@ const LOCAL_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 /** The helper's handed log of a session (under ~/.config/talkif/agent/). */
 const HANDED_LOG = /^\/[^\0\n]*\/\.config\/talkif\/agent\/handed-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.log$/
 const MESSAGE_ID = /^[A-Za-z0-9:._-]{1,128}$/
+/** A key in the handed log (no space: one "<ms> <key>" per line). */
+const DELIVERY_KEY = /^[A-Za-z0-9:#._-]{1,256}$/
+const RECEIVED_AT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,9})?Z$/
+
+/**
+ * What the handed log records for one pushed item (the helper computes it the same way). A board
+ * job comes once per claim: the daemon buffers a new claim of the same job (same messageId, new
+ * fence) as a new item with its own receivedAt, and its pushes again keep that receivedAt. So a
+ * job is keyed by messageId, taskId and receivedAt (a new claim is shown, a re-push of the same
+ * claim is not); anything else by its messageId. Undefined when the item has no usable messageId.
+ */
+export function deliveryKeyOf(raw: unknown): string | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const o = raw as Record<string, unknown>
+  if (typeof o.messageId !== 'string' || !MESSAGE_ID.test(o.messageId)) return undefined
+  if (o.job === true && isId(o.taskId) && typeof o.receivedAt === 'string' && RECEIVED_AT.test(o.receivedAt)) return `${o.messageId}#job:${o.taskId}:${o.receivedAt}`
+  return o.messageId
+}
 
 /** One daemon inbox entry, checked (the daemon fences peer text; it is still only data here). */
 export type DaemonEntry = {
@@ -134,7 +152,7 @@ type State = {
   where: string | undefined
   /** This window's MCP server's session (attached), not one of the plugin's own. */
   attached: boolean
-  /** The handed log of this session (the helper confirms an item to the daemon once its messageId is here). */
+  /** The handed log of this session (the helper confirms an item to the daemon once its delivery key is here). */
   handedLog: string | undefined
   mode: 'connecting' | 'push' | 'poll' | 'down'
   note: string | undefined
@@ -313,14 +331,14 @@ function keep(r: State, item: Received): void {
 }
 
 /**
- * The window has this item (step 3 of the delivery confirmation): its messageId goes into the
+ * The window has this item (step 3 of the delivery confirmation): its delivery key goes into the
  * session's handed log, and the helper then confirms it to the daemon. Never before the
  * hand-off; an item that is already in the log is confirmed by the helper without showing it.
  */
-async function markHanded($: EngineInterface, r: State, messageId: unknown): Promise<void> {
-  if (!r.handedLog || typeof messageId !== 'string' || !MESSAGE_ID.test(messageId)) return
+async function markHanded($: EngineInterface, r: State, key: string | undefined): Promise<void> {
+  if (!r.handedLog || key === undefined || !DELIVERY_KEY.test(key)) return
   const res = await $.process
-    .run(['sh', '-c', 'umask 077 && mkdir -p "$(dirname "$1")" && cat >> "$1"', 'sh', r.handedLog], { stdin: `${Date.now()} ${messageId}\n`, timeoutMs: 10_000 })
+    .run(['sh', '-c', 'umask 077 && mkdir -p "$(dirname "$1")" && cat >> "$1"', 'sh', r.handedLog], { stdin: `${Date.now()} ${key}\n`, timeoutMs: 10_000 })
     .catch(() => undefined)
   if (!res || res.exitCode !== 0) $.ui.log('call-me (Agent Bridge): an item could not be confirmed to the local daemon; it may be shown once more.', { to: 'debug' })
 }
@@ -329,11 +347,13 @@ async function onItem($: EngineInterface, raw: unknown): Promise<void> {
   const r = ds
   if (!r) return
   const entry = parseEntry(raw)
-  const rawId = typeof raw === 'object' && raw !== null ? (raw as { messageId?: unknown }).messageId : undefined
+  const key = deliveryKeyOf(raw)
   // Not an entry this plugin can show: confirmed, so the daemon does not push it again.
-  if (!entry) return markHanded($, r, rawId)
-  if (r.seen.has(entry.messageId)) return markHanded($, r, entry.messageId)
-  r.seen.add(entry.messageId)
+  if (!entry) return markHanded($, r, key)
+  // One delivery, one showing: a new claim of a board job is a new delivery (its own key).
+  const seenKey = key ?? entry.messageId
+  if (r.seen.has(seenKey)) return markHanded($, r, key)
+  r.seen.add(seenKey)
   for (const old of r.seen) {
     if (r.seen.size <= SEEN_MAX) break
     r.seen.delete(old)
@@ -342,7 +362,7 @@ async function onItem($: EngineInterface, raw: unknown): Promise<void> {
     const run = r.runs.get(entry.taskId)
     if (run) run.canceled = true
     else r.canceled.add(entry.taskId)
-    return markHanded($, r, entry.messageId)
+    return markHanded($, r, key)
   }
   // A task the daemon already refused (or ended) comes as a task entry with its state: a note only.
   if (entry.kind === 'task' && entry.taskId && (entry.state === undefined || entry.state === 'working' || entry.state === 'submitted')) {
@@ -353,7 +373,7 @@ async function onItem($: EngineInterface, raw: unknown): Promise<void> {
       const sent = r.sessionId ? await callDaemon($, r.socket, 'job_result', { session: r.sessionId, taskId: entry.taskId, state: 'failed', text: WRITE_JOB_REFUSED }) : undefined
       if (!sent?.ok) $.ui.log(`call-me (Agent Bridge): the write job from ${entry.from} could not be refused (${sent ? `${sent.code}: ${sent.message}` : 'not registered'}).`)
       $.ui.toast(`Agent Bridge: a write job from ${entry.from} was refused (peerTasks is read-only)`)
-      return markHanded($, r, entry.messageId)
+      return markHanded($, r, key)
     }
     r.runs.set(entry.taskId, { taskId: entry.taskId, from: entry.from, job: entry.job, write, turnId: undefined, canceled: r.canceled.delete(entry.taskId) })
     await refreshStatus($)
@@ -362,15 +382,15 @@ async function onItem($: EngineInterface, raw: unknown): Promise<void> {
     } catch (err) {
       // Not in the window: not confirmed either, so the daemon pushes it again.
       r.runs.delete(entry.taskId)
-      r.seen.delete(entry.messageId)
+      r.seen.delete(seenKey)
       throw err
     }
-    return markHanded($, r, entry.messageId)
+    return markHanded($, r, key)
   }
   // Messages, results of tasks this session gave, approvals and anything newer: context, shown once.
   keep(r, { at: new Date().toISOString().slice(0, 16).replace('T', ' '), from: entry.from, kind: entry.kind, ...(entry.taskId ? { taskId: entry.taskId } : {}), text: entry.text.slice(0, 4_000) })
   $.ui.toast(`Agent Bridge: ${entry.kind.replace('_', ' ')} from ${entry.from}`)
-  await markHanded($, r, entry.messageId)
+  await markHanded($, r, key)
 }
 
 // ---- turns ----
