@@ -1,0 +1,846 @@
+{
+  "v": 1,
+  "rule": "Locks: NFC + lower-case, ./ and . dropped, // collapsed; trailing / or ** \u2192 tree; the first glob segment and all after it \u2192 tree on the folder before it; '', '.', '**' \u2192 tree '' (whole repository). H(d,v) = HMAC-SHA256(boardKey, 'tap/1-lock\\n' + repoId + '\\n' + d + '\\n' + v), base64url. Conflict: same repo and (both file, same key) or a tree whose key is the other's key or one of its ancestors.",
+  "normalize": [
+    {
+      "input": "src/main.rs",
+      "kind": "file",
+      "path": "src/main.rs"
+    },
+    {
+      "input": "./src//lib/./mod.rs",
+      "kind": "file",
+      "path": "src/lib/mod.rs"
+    },
+    {
+      "input": "src/",
+      "kind": "tree",
+      "path": "src"
+    },
+    {
+      "input": "src/**",
+      "kind": "tree",
+      "path": "src"
+    },
+    {
+      "input": "src/*.ts",
+      "kind": "tree",
+      "path": "src"
+    },
+    {
+      "input": "**/*.md",
+      "kind": "tree",
+      "path": ""
+    },
+    {
+      "input": "a/b*/c",
+      "kind": "tree",
+      "path": "a"
+    },
+    {
+      "input": "docs/{a,b}.md",
+      "kind": "tree",
+      "path": "docs"
+    },
+    {
+      "input": "x/file?.txt",
+      "kind": "tree",
+      "path": "x"
+    },
+    {
+      "input": ".",
+      "kind": "tree",
+      "path": ""
+    },
+    {
+      "input": "**",
+      "kind": "tree",
+      "path": ""
+    },
+    {
+      "input": "  README.md  ",
+      "kind": "file",
+      "path": "readme.md"
+    },
+    {
+      "input": "Src/Main.RS",
+      "kind": "file",
+      "path": "src/main.rs"
+    },
+    {
+      "input": "cafe\u0301/menu.txt",
+      "kind": "file",
+      "path": "caf\u00e9/menu.txt"
+    },
+    {
+      "input": "",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "   ",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "/etc/passwd",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "~/notes",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "C:/x",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "a\\b",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "a/../b",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "a/\u0007b",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "a/\u0085b",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "d0/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/d12/d13/d14/d15/d16/d17/d18/d19/d20/d21/d22/d23/d24/d25/d26/d27/d28/d29/d30/d31/d32",
+      "refused": "path_invalid"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "refused": "path_invalid"
+    }
+  ],
+  "sets": [
+    {
+      "inputs": [
+        "src/a.ts",
+        "src/",
+        "docs/x.md"
+      ],
+      "locks": [
+        {
+          "kind": "tree",
+          "path": "src"
+        },
+        {
+          "kind": "file",
+          "path": "docs/x.md"
+        }
+      ]
+    },
+    {
+      "inputs": [
+        "a.ts",
+        "A.ts",
+        "./a.ts"
+      ],
+      "locks": [
+        {
+          "kind": "file",
+          "path": "a.ts"
+        }
+      ]
+    },
+    {
+      "inputs": [
+        "**",
+        "src/a.ts"
+      ],
+      "locks": [
+        {
+          "kind": "tree",
+          "path": ""
+        }
+      ]
+    },
+    {
+      "inputs": [
+        "f0.ts",
+        "f1.ts",
+        "f2.ts",
+        "f3.ts",
+        "f4.ts",
+        "f5.ts",
+        "f6.ts",
+        "f7.ts",
+        "f8.ts",
+        "f9.ts",
+        "f10.ts",
+        "f11.ts",
+        "f12.ts",
+        "f13.ts",
+        "f14.ts",
+        "f15.ts",
+        "f16.ts",
+        "f17.ts",
+        "f18.ts",
+        "f19.ts",
+        "f20.ts",
+        "f21.ts",
+        "f22.ts",
+        "f23.ts",
+        "f24.ts",
+        "f25.ts",
+        "f26.ts",
+        "f27.ts",
+        "f28.ts",
+        "f29.ts",
+        "f30.ts",
+        "f31.ts",
+        "f32.ts"
+      ],
+      "refused": "too_many_paths"
+    }
+  ],
+  "repoIds": [
+    {
+      "url": "git@github.com:Example-Org/Repo.git",
+      "id": "github.com/example-org/repo"
+    },
+    {
+      "url": "https://user:token@github.com:443/Example-Org/Repo.git/",
+      "id": "github.com/example-org/repo"
+    },
+    {
+      "url": "ssh://git@git.example.com:2222/team/app",
+      "id": "git.example.com/team/app"
+    },
+    {
+      "url": "https://gitlab.example.com/group/sub/proj.git",
+      "id": "gitlab.example.com/group/sub/proj"
+    },
+    {
+      "url": null,
+      "machineId": "0192f000-0000-4000-8000-00000000abcd",
+      "commonDir": "/Users/dev/code/app/.git",
+      "id": "local:0192f000-0000-4000-8000-00000000abcd:/Users/dev/code/app/.git"
+    }
+  ],
+  "boardKey": {
+    "keyId": "0192f000-0000-4000-8000-0000000000b0",
+    "keyHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "repoId": "github.com/example-org/repo",
+    "otherRepoId": "github.com/example-org/other"
+  },
+  "locks": [
+    {
+      "kind": "file",
+      "path": "src/main.rs",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "GhsuEY-uaJYS08IV9cBZWKkZ9o88Qqgr2uHRlA6Kt_0",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "gx4wVbOdyxjbc8kJon9OYr0w0Ssia1qdPtmuj9Gy3zk"
+        ]
+      }
+    },
+    {
+      "kind": "file",
+      "path": "src/lib/mod.rs",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "x32LFmckD221D9teRAwMhgDOZrdgTsC_OJ0kZUitV3o",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "gx4wVbOdyxjbc8kJon9OYr0w0Ssia1qdPtmuj9Gy3zk",
+          "RB1VTHudH6aQioc6lnxgpS432AThhJQZlSLUHOqVqOw"
+        ]
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "src",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gx4wVbOdyxjbc8kJon9OYr0w0Ssia1qdPtmuj9Gy3zk",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "src",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gx4wVbOdyxjbc8kJon9OYr0w0Ssia1qdPtmuj9Gy3zk",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "src",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gx4wVbOdyxjbc8kJon9OYr0w0Ssia1qdPtmuj9Gy3zk",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+        "anc": []
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "a",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "docs",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "JCTqFuasxxcrOzB0mw6vOmnoklyE7ZzibU5EOc0AcUQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "x",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "qAGyapqqRbaAy17x-z8h6i5p9r3-8zvIIS4100TbwQ4",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+        "anc": []
+      }
+    },
+    {
+      "kind": "tree",
+      "path": "",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+        "anc": []
+      }
+    },
+    {
+      "kind": "file",
+      "path": "readme.md",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "pgD40PoX9V7MUNpX0swK5KV0hLEKkuqMip0HqOok7pU",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      }
+    },
+    {
+      "kind": "file",
+      "path": "src/main.rs",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "GhsuEY-uaJYS08IV9cBZWKkZ9o88Qqgr2uHRlA6Kt_0",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "gx4wVbOdyxjbc8kJon9OYr0w0Ssia1qdPtmuj9Gy3zk"
+        ]
+      }
+    },
+    {
+      "kind": "file",
+      "path": "caf\u00e9/menu.txt",
+      "lock": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "jImkroNNdgAFh6dtXwTga_obEFtad5BWd2iGgsdwyhc",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "ZP5-J-YuMT_aOelowIbJifvVNVKrftZRuSGLkgcQZHA"
+        ]
+      }
+    }
+  ],
+  "conflicts": [
+    {
+      "a": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "b": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EQcDhCoQDnpBWmd4hRMD3nEEikQktvaEO0g5PiI0mPQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EQcDhCoQDnpBWmd4hRMD3nEEikQktvaEO0g5PiI0mPQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "conflict": true
+    },
+    {
+      "a": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "b": {
+        "kind": "file",
+        "path": "a/b/d.ts"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EQcDhCoQDnpBWmd4hRMD3nEEikQktvaEO0g5PiI0mPQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "r7Xp5ifCMUv0RvPhie65E7_MY7GVjvBmiUCCLTwkmeA",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "conflict": false
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": "a/b"
+      },
+      "b": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EQcDhCoQDnpBWmd4hRMD3nEEikQktvaEO0g5PiI0mPQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "conflict": true
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": "a"
+      },
+      "b": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EQcDhCoQDnpBWmd4hRMD3nEEikQktvaEO0g5PiI0mPQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "conflict": true
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": "a/b/c"
+      },
+      "b": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "rs71CFoAJrltftG4GEODSkN5Ly-CZ-zpyhgGAI-PuRY",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EQcDhCoQDnpBWmd4hRMD3nEEikQktvaEO0g5PiI0mPQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "conflict": false
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": "a/b"
+      },
+      "b": {
+        "kind": "tree",
+        "path": "a/b"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k"
+        ]
+      },
+      "conflict": true
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": "a"
+      },
+      "b": {
+        "kind": "tree",
+        "path": "a/b"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k"
+        ]
+      },
+      "conflict": true
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": "a/b"
+      },
+      "b": {
+        "kind": "tree",
+        "path": "a/c"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "BOWSQ7jDRu0xA4PYakZ5izjmbdyp4-CPBhQOP7rQtNA",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k"
+        ]
+      },
+      "conflict": false
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": ""
+      },
+      "b": {
+        "kind": "file",
+        "path": "x/y.ts"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+        "anc": []
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EUYJFHBRQgLvV8Cb5QkneyywQ4iWN9rGIFj4oxOyrHY",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "qAGyapqqRbaAy17x-z8h6i5p9r3-8zvIIS4100TbwQ4"
+        ]
+      },
+      "conflict": true
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": "x"
+      },
+      "b": {
+        "kind": "file",
+        "path": "y/z.ts"
+      },
+      "otherRepo": false,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "qAGyapqqRbaAy17x-z8h6i5p9r3-8zvIIS4100TbwQ4",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "YkQ6q4RvzTesvOy00NGlKDILBqIxgbmrs0v_mxfWdCE",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "K33wmH9PZqKMj7MAQrIfaNUXxZVsWPs2D2v2onsOnTE"
+        ]
+      },
+      "conflict": false
+    },
+    {
+      "a": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "b": {
+        "kind": "file",
+        "path": "a/b/c.ts"
+      },
+      "otherRepo": true,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "file",
+        "key": "EQcDhCoQDnpBWmd4hRMD3nEEikQktvaEO0g5PiI0mPQ",
+        "anc": [
+          "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+          "cdy3xIYdBatO2Bv6O-dQZGgc-TW0cIns5Eqs7x7bC5k",
+          "3R-BFil1lhIY60hiCKhSPsZBmHwbm6xrRKf06reoXeM"
+        ]
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "DSBVLLonIsEATY_l446jfj03oSmxQAa4sfOziGoyjDU",
+        "kind": "file",
+        "key": "US27u-jMgtkwfA-7xQoXNYFMwmCRpCRhETubDDgOsiY",
+        "anc": [
+          "JMlxgxA-J3cmKEqcNnOS5GCVL8zJWWmcMZOPDNsg2NI",
+          "FT9pIVHFh354yS9VMaiUNF4xW4-1_Z9kycEi-ooSSas",
+          "bOspTt6sH9h3L9Hl5SThYzs2xtpLU0hpZBNz_2jdklc"
+        ]
+      },
+      "conflict": false
+    },
+    {
+      "a": {
+        "kind": "tree",
+        "path": ""
+      },
+      "b": {
+        "kind": "tree",
+        "path": ""
+      },
+      "otherRepo": true,
+      "lockA": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "sBeCkkheo09Cn-uB659Hu9cZF6XXje9NljVdimwM_ic",
+        "kind": "tree",
+        "key": "gafFinaJQILmm5QQQIA_-aWq7wuMGDhDYDNrvuLb8L4",
+        "anc": []
+      },
+      "lockB": {
+        "keyId": "0192f000-0000-4000-8000-0000000000b0",
+        "repo": "DSBVLLonIsEATY_l446jfj03oSmxQAa4sfOziGoyjDU",
+        "kind": "tree",
+        "key": "JMlxgxA-J3cmKEqcNnOS5GCVL8zJWWmcMZOPDNsg2NI",
+        "anc": []
+      },
+      "conflict": false
+    }
+  ],
+  "keyCopy": {
+    "sender": "0192f000-0000-7000-8000-0000000000aa",
+    "senderSigningSecretHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "recipient": "0192f000-0000-7000-8000-0000000000bb",
+    "recipientPrivateHex": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+    "ephemeralPrivateHex": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+    "nonceHex": "606162636465666768696a6b",
+    "messageId": "boardkey:0192f000-0000-4000-8000-0000000000b0",
+    "aad": "tap/1-boardkey|0192f000-0000-7000-8000-0000000000aa|0192f000-0000-4000-8000-0000000000b0|0192f000-0000-7000-8000-0000000000bb",
+    "ct": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmpgYWJjZGVmZ2hpamvH9ckWHEO8lZ_0EvT27aR_O6aV1xVUvTMT3aXQdQG1zLHzOKkaeTj8ulrwRkBvEFI",
+    "sigInput": "tap/1-boardkey-sig\ntap/1-boardkey|0192f000-0000-7000-8000-0000000000aa|0192f000-0000-4000-8000-0000000000b0|0192f000-0000-7000-8000-0000000000bb\n59c329b8b297064b20cf04536d7d19c8684d649b2d5e91a6a31e7a0ac126898c",
+    "sig": "-XPeZPOoH1velKVKAdBn72c5-V1YWWFtttnueteqSu50_FVJ66fOrWJZ_Vq71IB1qqxhsTN-vqROPKcDTabqDg"
+  },
+  "shellQuote": [
+    {
+      "input": "claude",
+      "quoted": "claude"
+    },
+    {
+      "input": "/Users/dev/.talkif/agents/worktrees/app/0123456789ab",
+      "quoted": "/Users/dev/.talkif/agents/worktrees/app/0123456789ab"
+    },
+    {
+      "input": "Agent Bridge job: run check_inbox and do the job pinned to this session.",
+      "quoted": "'Agent Bridge job: run check_inbox and do the job pinned to this session.'"
+    },
+    {
+      "input": "it's",
+      "quoted": "'it'\\''s'"
+    },
+    {
+      "input": "",
+      "quoted": "''"
+    },
+    {
+      "input": "$(rm -rf ~)",
+      "quoted": "'$(rm -rf ~)'"
+    },
+    {
+      "input": "a;b|c&d`e`",
+      "quoted": "'a;b|c&d`e`'"
+    },
+    {
+      "input": "--prompt-interactive",
+      "quoted": "--prompt-interactive"
+    }
+  ]
+}
