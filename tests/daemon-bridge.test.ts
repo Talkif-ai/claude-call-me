@@ -31,7 +31,7 @@ type Daemon = {
 }
 
 /** A machine whose local daemon answers, and a fake helper child the test writes events into. */
-function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean; hosted?: string } = {}): Daemon {
+function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean; hosted?: string; messages?: { role: string; text: string }[] } = {}): Daemon {
   const d: Daemon = { emit: () => undefined, calls: [], argv: [], spawned: [], urls: [], prompts: [], tools: [], commands: [], logs: [], status: [], handed: [] }
   const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', (_$, e) => {
@@ -50,6 +50,7 @@ function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean; hosted
       d.calls.push(req)
       if (req.op === 'status') return out(opts.statusOk === false ? '{"ok":false,"error":{"code":"internal","message":"x"}}\n' : '{"ok":true,"result":{"daemon":{"version":"0.4.1"}}}\n')
       if (req.op === 'reply' || req.op === 'job_result') return out(`{"ok":true,"result":{"taskId":"${TASK}","state":"completed"}}\n`)
+      if (req.op === 'session_recap') return out('{"ok":true,"result":{"recapSeq":1}}\n')
       return out('{"ok":false,"error":{"code":"bad_request","message":"unknown op"}}\n')
     }
     return out('', 1)
@@ -80,7 +81,7 @@ function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean; hosted
     return { value: { status: 404, ok: false, headers: {}, text: '{"code":"not_found"}' } }
   })
   on('session.id', () => ({ value: 'session-test' }))
-  on('session.messages', () => ({ value: [] }))
+  on('session.messages', () => ({ value: (opts.messages ?? []) as never }))
   on('ui.log', (_$, e) => {
     d.logs.push(e.text)
     return { value: undefined }
@@ -115,7 +116,7 @@ function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean; hosted
 const denied = (r: unknown): string | undefined => (typeof r === 'object' && r !== null && 'deny' in r && typeof r.deny === 'string' ? r.deny : undefined)
 const ran = (r: unknown): unknown => (typeof r === 'object' && r !== null && 'result' in r ? r.result : undefined)
 
-async function registered($: Engine, on: On, opts: { statusOk?: boolean; socket?: boolean; attached?: boolean; hosted?: string } = {}) {
+async function registered($: Engine, on: On, opts: { statusOk?: boolean; socket?: boolean; attached?: boolean; hosted?: string; messages?: { role: string; text: string }[] } = {}) {
   const clock = mock.clock(on)
   mock.store(on)
   const d = fakeDaemon(on, opts)
@@ -536,4 +537,27 @@ test('side answer: only a plain task can be marked read (a job or a write flag i
   expect(sideNotesText([])).toBe(undefined)
   expect(questionOf('note\n<peer-task untrusted="true">\nthe question\n</peer-task>')).toBe('the question')
   expect(oneLine('a\n  b   c', 4)).toBe('a b…')
+})
+
+test('auto recap: after a turn the window shares one line of what it works on (a small model, at most every 10 minutes), secrets scrubbed', async ($, on) => {
+  const prompts: string[] = []
+  on('model.complete', (_$, e) => {
+    prompts.push(typeof e.prompt === 'string' ? e.prompt : JSON.stringify(e.prompt))
+    return { value: { isAnswered: true as const, text: 'backend-rs: renaming the login route, tests green (key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA)', usage: USAGE } }
+  })
+  const { clock, d } = await registered($, on, { messages: [{ role: 'user', text: 'rename the login route' }, { role: 'assistant', text: 'Done, tests green.' }] })
+  await $.turn.start({ text: 'rename the login route', turnId: 't1' })
+  await complete($, 't1', 'Done.')
+  await clock.advance(10)
+  const recap = d.calls.find(c => c.op === 'session_recap')
+  expect(recap?.args.session).toBe(SID)
+  expect(String(recap?.args.text)).toMatch(/^backend-rs: renaming the login route, tests green/)
+  expect(String(recap?.args.text)).not.toMatch(/sk-ant-api03/)
+  expect(String(recap?.args.text).length <= 200).toBe(true)
+  expect(prompts[0]).toMatch(/<peer-agent untrusted="true">/)
+  // Again right away: not shared again (once per 10 minutes).
+  await $.turn.start({ text: 'next', turnId: 't2' })
+  await complete($, 't2', 'Done.')
+  await clock.advance(10)
+  expect(d.calls.filter(c => c.op === 'session_recap').length).toBe(1)
 })

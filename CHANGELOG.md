@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.29.2 — 2026-10-20
+
+- **Each window says what it works on, by itself.** Through the local daemon, after a turn (at most every 10 minutes) a small model sums up the window's last messages in one line and the daemon shares it, sealed, with your other agents as the session's recap. A lead (talkif-agents 0.7.0) reads these to know which window does what, so it can hand work to the right one without asking you. Secrets are scrubbed from the line.
+
 ## 0.29.1 — 2026-10-19
 
 - **A conversation hosted by the talkif-agents daemon is one session.** Inside a conversation the daemon keeps without a window (`talkif-agents hosted`, 0.6.0; `TALKIF_AGENTS_HOSTED` in its environment), the plugin no longer registers a session of its own with the daemon: the daemon takes that conversation's items itself. Before, it would have shown up twice and could have taken items meant for the hosted session.
