@@ -1,0 +1,128 @@
+{
+  "v": 1,
+  "attach": {
+    "op": "session_attach",
+    "args": {
+      "pid": 4242,
+      "as": "claude"
+    },
+    "result": [
+      "sessionId",
+      "agent",
+      "label",
+      "attached"
+    ]
+  },
+  "subscribe": {
+    "op": "subscribe",
+    "args": {
+      "session": "0192f000-0000-7000-8000-000000000009",
+      "writeJobs": false
+    }
+  },
+  "entries": [
+    {
+      "name": "read task",
+      "entry": {
+        "messageId": "0192f000-0000-7000-8000-000000000001",
+        "taskId": "0192f000-0000-7000-8000-000000000002",
+        "kind": "task",
+        "from": {
+          "agentId": "0192f000-0000-7000-8000-000000000003",
+          "name": "lead"
+        },
+        "state": "working",
+        "text": "<fenced job text>",
+        "receivedAt": "2026-10-19T12:00:00.000Z"
+      },
+      "expect": {
+        "job": false,
+        "write": false
+      }
+    },
+    {
+      "name": "read board job",
+      "entry": {
+        "messageId": "0192f000-0000-7000-8000-000000000001",
+        "taskId": "0192f000-0000-7000-8000-000000000002",
+        "kind": "task",
+        "from": {
+          "agentId": "0192f000-0000-7000-8000-000000000003",
+          "name": "lead"
+        },
+        "state": "working",
+        "text": "<fenced job text>",
+        "receivedAt": "2026-10-19T12:00:00.000Z",
+        "job": true
+      },
+      "expect": {
+        "job": true,
+        "write": false
+      }
+    },
+    {
+      "name": "write board job",
+      "entry": {
+        "messageId": "0192f000-0000-7000-8000-000000000001",
+        "taskId": "0192f000-0000-7000-8000-000000000002",
+        "kind": "task",
+        "from": {
+          "agentId": "0192f000-0000-7000-8000-000000000003",
+          "name": "lead"
+        },
+        "state": "working",
+        "text": "<fenced job text>",
+        "receivedAt": "2026-10-19T12:00:00.000Z",
+        "job": true,
+        "write": true,
+        "branch": "agent/0192f0000000-fix"
+      },
+      "expect": {
+        "job": true,
+        "write": true,
+        "branch": "agent/0192f0000000-fix"
+      }
+    },
+    {
+      "name": "write without job",
+      "entry": {
+        "messageId": "0192f000-0000-7000-8000-000000000001",
+        "taskId": "0192f000-0000-7000-8000-000000000002",
+        "kind": "task",
+        "from": {
+          "agentId": "0192f000-0000-7000-8000-000000000003",
+          "name": "lead"
+        },
+        "state": "working",
+        "text": "<fenced job text>",
+        "receivedAt": "2026-10-19T12:00:00.000Z",
+        "write": true
+      },
+      "expect": {
+        "job": false,
+        "write": false
+      }
+    },
+    {
+      "name": "write not literally true",
+      "entry": {
+        "messageId": "0192f000-0000-7000-8000-000000000001",
+        "taskId": "0192f000-0000-7000-8000-000000000002",
+        "kind": "task",
+        "from": {
+          "agentId": "0192f000-0000-7000-8000-000000000003",
+          "name": "lead"
+        },
+        "state": "working",
+        "text": "<fenced job text>",
+        "receivedAt": "2026-10-19T12:00:00.000Z",
+        "job": true,
+        "write": "true"
+      },
+      "expect": {
+        "job": true,
+        "write": false
+      }
+    }
+  ]
+}

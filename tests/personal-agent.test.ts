@@ -177,7 +177,7 @@ test('hidden characters: shown as \\uXXXX exactly as hidden.json says, and flagg
 
 test('vectors: every shared file matches SHA256SUMS, and the hooks classify and scrub by the same bytes', async () => {
   const sums = (VECTOR_FILES['SHA256SUMS'] ?? '').trim().split('\n')
-  expect(sums.length).toBe(6)
+  expect(sums.length).toBe(8)
   for (const line of sums) {
     const [sum, name] = line.split(/\s+/)
     expect(`${name} ${T.sha256Hex(VECTOR_FILES[name ?? ''] ?? '')}`).toBe(`${name} ${sum}`)

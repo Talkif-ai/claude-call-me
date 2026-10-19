@@ -2,12 +2,18 @@
 // (talkif-agents). The plugin cannot open a Unix socket that speaks newline JSON (its
 // network is fetch only), so it runs this script with `node -e` and reads its stdout.
 //
-//   watch <socket> <cwd> [<agent>]   register this session (as $TALKIF_AGENT, else <agent>) (session_start, client "mcp")
-//                                    on one long-lived connection, then wait for its
-//                                    items: the `subscribe` op when the daemon has it,
-//                                    else a long-poll of `inbox`. One JSON line per event
-//                                    on stdout. The daemon ends the session when this
-//                                    process (and so the connection) goes away.
+//   watch <socket> <cwd> [<agent>|-] [writes]
+//                                    on one long-lived connection: attach to the session
+//                                    this window's MCP server registered (session_attach,
+//                                    by the window's tool pid; one window, one session), or,
+//                                    when the window runs none, register one of its own
+//                                    (session_start, client "mcp", as $TALKIF_AGENT, else
+//                                    <agent>). Then wait for its items: the `subscribe` op
+//                                    (without `writes`: write jobs stay for check_inbox) when
+//                                    the daemon has it, else a long-poll of `inbox`. One JSON
+//                                    line per event on stdout. An own session ends when this
+//                                    process (and so the connection) goes away; an attached
+//                                    one lives with its MCP server.
 //   call <socket>                    one request read from stdin as {op, args}; one JSON
 //                                    line {ok, result | error} on stdout.
 //
@@ -15,7 +21,7 @@
 // text or answers on a command line (stdin and the socket only).
 //
 // stdout events of `watch`:
-//   {"t":"started", sessionId, agent?, label?, folder?, repo?, branch?}
+//   {"t":"started", sessionId, attached, agent?, label?, folder?, repo?, branch?}
 //   {"t":"mode", mode: "push" | "poll"}
 //   {"t":"items", items: [...]}         daemon inbox entries, as the daemon returns them
 //   {"t":"error", code, message}        session_start refused (retried after 30 s)
@@ -136,8 +142,8 @@ const open = path =>
     })
   })
 
-const started = r => {
-  const o = { t: 'started', sessionId: r.sessionId }
+const started = (r, attached) => {
+  const o = { t: 'started', sessionId: r.sessionId, attached }
   for (const k of ['agent', 'label', 'folder', 'repo', 'branch']) if (typeof r[k] === 'string') o[k] = r[k]
   return o
 }
@@ -153,15 +159,24 @@ const drain = async (l, session) => {
   }
 }
 
-const watch = async (path, cwd, as) => {
+// How long a new window waits for its MCP server's session before registering one of its own,
+// and how often a window on its own session looks again (the MCP server came up later).
+const ATTACH_GRACE_MS = 20000
+const RECHECK_MS = 30000
+const TICK = Symbol('tick')
+
+const watch = async (path, cwd, as, writeJobs) => {
   const parent = process.ppid
   // The host went away without killing this child: leave (the daemon then ends the session).
   setInterval(() => {
     if (process.ppid !== parent) process.exit(0)
   }, 5000).unref()
-  let last
+  // This window's own session (only while the window runs no talkif MCP server), resumed after a reconnect.
+  let own
+  // false: the daemon predates session_attach; this window then has a session of its own.
+  let attachable = true
+  let graceUntil = Date.now() + ATTACH_GRACE_MS
   let delay = 1000
-  const spawned = process.env.TALKIF_AGENTS_SESSION
   for (;;) {
     let l
     try {
@@ -172,37 +187,59 @@ const watch = async (path, cwd, as) => {
       delay = Math.min(30000, delay * 2)
       continue
     }
+    let attached = false
     try {
-      const base = { cwd, client: 'mcp', pid: parent }
-      if (as) base.as = as
-      const tries = []
-      if (last) tries.push(Object.assign({}, base, { resume: last.sessionId }, last.label ? { label: last.label } : {}))
-      else if (spawned && UUID.test(spawned)) tries.push(Object.assign({}, base, { spawnSession: spawned }))
-      tries.push(base)
-      let r
-      let err
-      for (const a of tries) {
+      // One window, one session: the session the window's MCP server registered, found by this
+      // window's tool pid. A job window's own session id is the MCP server's to claim, never this helper's.
+      const findWindow = async () => {
+        if (!attachable) return undefined
         try {
-          r = await l.call('session_start', a, 30000)
-          break
+          return await l.call('session_attach', Object.assign({ pid: parent }, as ? { as } : {}), 10000)
         } catch (e) {
-          err = e
           if (e.code === 'closed') throw e
+          if (e.code === 'bad_request' && e.message === 'unknown op') attachable = false
+          return undefined
         }
       }
-      if (!r || typeof r.sessionId !== 'string' || !UUID.test(r.sessionId)) {
-        out({ t: 'error', code: (err && err.code) || 'internal', message: (err && err.message) || 'no session' })
-        l.close()
-        await sleep(30000)
-        continue
+      let r = await findWindow()
+      while (!r && attachable && !own && Date.now() < graceUntil) {
+        await sleep(1000)
+        r = await findWindow()
       }
-      last = { sessionId: r.sessionId, label: typeof r.label === 'string' && LABEL.test(r.label) ? r.label : undefined }
+      if (r && typeof r.sessionId === 'string' && UUID.test(r.sessionId)) {
+        attached = true
+        own = undefined
+      } else {
+        const base = { cwd, client: 'mcp', pid: parent }
+        if (as) base.as = as
+        const tries = []
+        if (own) tries.push(Object.assign({}, base, { resume: own.sessionId }, own.label ? { label: own.label } : {}))
+        tries.push(base)
+        let err
+        r = undefined
+        for (const a of tries) {
+          try {
+            r = await l.call('session_start', a, 30000)
+            break
+          } catch (e) {
+            err = e
+            if (e.code === 'closed') throw e
+          }
+        }
+        if (!r || typeof r.sessionId !== 'string' || !UUID.test(r.sessionId)) {
+          out({ t: 'error', code: (err && err.code) || 'internal', message: (err && err.message) || 'no session' })
+          l.close()
+          await sleep(30000)
+          continue
+        }
+        own = { sessionId: r.sessionId, label: typeof r.label === 'string' && LABEL.test(r.label) ? r.label : undefined }
+      }
       delay = 1000
-      out(started(r))
+      out(started(r, attached))
       const session = r.sessionId
       let push = true
       try {
-        const s = await l.call('subscribe', { session }, 10000)
+        const s = await l.call('subscribe', Object.assign({ session }, writeJobs ? {} : { writeJobs: false }), 10000)
         const first = itemsOf(s)
         if (first.length) out({ t: 'items', items: first })
       } catch (e) {
@@ -212,9 +249,25 @@ const watch = async (path, cwd, as) => {
       out({ t: 'mode', mode: push ? 'push' : 'poll' })
       if (push) {
         await drain(l, session)
+        let next = l.nextPush()
         for (;;) {
-          const m = await l.nextPush()
+          const m = attached ? await next : await Promise.race([next, sleep(RECHECK_MS).then(() => TICK)])
+          if (m === TICK) {
+            // The window's MCP server came up after all: move to its session (ours ends with this connection).
+            if (await findWindow()) {
+              own = undefined
+              break
+            }
+            continue
+          }
+          next = l.nextPush()
           if (m === null) break
+          // The session ended (the MCP server restarted or quit): find it again, from a fresh grace.
+          if (m.event === 'end') {
+            graceUntil = Date.now() + ATTACH_GRACE_MS
+            if (!attached) own = undefined
+            break
+          }
           // Items in the push are used as they are; any other push is a doorbell.
           if (Array.isArray(m.items)) {
             if (m.items.length) out({ t: 'items', items: m.items })
@@ -228,7 +281,8 @@ const watch = async (path, cwd, as) => {
         }
       }
     } catch {
-      // Lost or failed: reconnect below and resume the same session.
+      // Lost or failed: reconnect below and resume (or attach to) the same session.
+      if (attached) graceUntil = Date.now() + ATTACH_GRACE_MS
     }
     l.close()
     out({ t: 'closed' })
@@ -258,7 +312,7 @@ const once = async path => {
   }
 }
 
-if (args[0] === 'watch' && args[1] && args[2]) watch(args[1], args[2], process.env.TALKIF_AGENT || args[3] || undefined)
+if (args[0] === 'watch' && args[1] && args[2]) watch(args[1], args[2], process.env.TALKIF_AGENT || (args[3] && args[3] !== '-' ? args[3] : undefined), args[4] === 'writes')
 else if (args[0] === 'call' && args[1]) once(args[1]).then(() => process.exit(0))
 else {
   out({ ok: false, error: { code: 'bad_request', message: 'usage: watch <socket> <cwd> [agent] | call <socket>' } })

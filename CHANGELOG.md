@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.27.1 — 2026-10-19
+
+- **One window, one session.** A window that also runs the talkif MCP server no longer registers a second session with the local daemon: the plugin finds the session that server registered (by this window's process, `talkif-agents` 0.4.3 or newer) and reads its items from there. Before, other agents saw two sessions for one window, and an item given to the MCP one waited for `check_inbox` and was then answered by the daemon's separate headless run, without the window's context. A window without the MCP server still registers its own session (after waiting up to 20 seconds for one to appear, and moving to it if it appears later). The plugin never claims a daemon job window's session id any more; that is the MCP server's.
+- **Board jobs are no longer closed as done without being done.** The daemon now marks a board job, and a write job in its own worktree, in what it sends. A write job runs with writes only when `peerTasks` is `follow-hub`; with the default read-only setting the plugin leaves write jobs to `check_inbox` and refuses one that still reaches it (failed, with the reason), instead of running it read-only and reporting it completed. A board job's answer goes back as its job result, and its prompt no longer contradicts the daemon's own note.
+- The shared test vectors are mirrored again (`local.json` is new; the refusal and hub-kind lists match the shared ones: the board kinds are hints only on the direct path).
+
 ## 0.27.0 — 2026-10-19
 
 - **Agent Bridge through the local daemon.** When the `talkif-agents` daemon runs on this computer, each session registers with it (its folder; the daemon adds repository, branch and label) instead of connecting to Talkif itself, and the daemon's items for this session are pushed into the open window (long-polled on a daemon without push). A read task is now answered in the window that holds the context, instead of by the daemon's separate headless run after 8 seconds. Messages, results and any other item the daemon gives this session reach the window too, as fenced context and a toast.

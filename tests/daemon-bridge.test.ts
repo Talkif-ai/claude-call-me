@@ -2,8 +2,9 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { daemonTaskPrompt, parseEntry, writeAllowed } from '../hooks/daemon-bridge'
+import { daemonTaskPrompt, parseEntry, WRITE_JOB_REFUSED, writeAllowed } from '../hooks/daemon-bridge'
 import { DAEMON_HELPER_JS } from '../hooks/daemon-helper'
+import { VECTOR_FILES } from './vectors'
 
 const SOCKET = '/home/test/.config/talkif/agents/daemon.sock'
 const SID = '0192f000-0000-4000-8000-0000000000aa'
@@ -41,7 +42,7 @@ function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean } = {})
       const req = JSON.parse(e.init?.stdin ?? '{}') as { op: string; args: Record<string, unknown> }
       d.calls.push(req)
       if (req.op === 'status') return out(opts.statusOk === false ? '{"ok":false,"error":{"code":"internal","message":"x"}}\n' : '{"ok":true,"result":{"daemon":{"version":"0.4.1"}}}\n')
-      if (req.op === 'reply') return out(`{"ok":true,"result":{"taskId":"${TASK}","state":"completed"}}\n`)
+      if (req.op === 'reply' || req.op === 'job_result') return out(`{"ok":true,"result":{"taskId":"${TASK}","state":"completed"}}\n`)
       return out('{"ok":false,"error":{"code":"bad_request","message":"unknown op"}}\n')
     }
     return out('', 1)
@@ -107,13 +108,13 @@ function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean } = {})
 const denied = (r: unknown): string | undefined => (typeof r === 'object' && r !== null && 'deny' in r && typeof r.deny === 'string' ? r.deny : undefined)
 const ran = (r: unknown): unknown => (typeof r === 'object' && r !== null && 'result' in r ? r.result : undefined)
 
-async function registered($: Engine, on: On, opts: { statusOk?: boolean; socket?: boolean } = {}) {
+async function registered($: Engine, on: On, opts: { statusOk?: boolean; socket?: boolean; attached?: boolean } = {}) {
   const clock = mock.clock(on)
   mock.store(on)
   const d = fakeDaemon(on, opts)
   await $.session.start({ cwd: '/home/test/repo', surface: null, isInteractive: true })
   await clock.advance(10)
-  d.emit({ t: 'started', sessionId: SID, agent: 'claude', label: 'repo', folder: 'repo', repo: 'repo', branch: 'main' })
+  d.emit({ t: 'started', sessionId: SID, attached: opts.attached === true, agent: 'claude', label: 'repo', folder: 'repo', repo: 'repo', branch: 'main' })
   d.emit({ t: 'mode', mode: 'push' })
   await clock.advance(10)
   return { clock, d }
@@ -137,6 +138,7 @@ test('daemon running: this session registers through the helper; no hub request,
   const watch = d.spawned[0] ?? []
   expect(watch.slice(0, 2)).toEqual(['node', '-e'])
   expect(watch[2]).toBe(DAEMON_HELPER_JS)
+  // No `writes` under the default read-only ceiling: write jobs stay for check_inbox.
   expect(watch.slice(3)).toEqual(['watch', SOCKET, '/home/test/repo', 'claude'])
   expect(d.calls[0]?.op).toBe('status')
   expect(d.urls.some(u => u.includes('/me/agents'))).toBe(false)
@@ -180,7 +182,7 @@ test('the same item pushed twice runs once', async ($, on) => {
   expect(d.prompts.filter(p => p.startsWith('[peer-task:')).length).toBe(1)
 })
 
-test('a write item stays read-only under the default peerTasks ceiling', async ($, on) => {
+test('a write flag without a board job stays read-only', { options: { peerTasks: 'follow-hub' } }, async ($, on) => {
   const { clock, d } = await registered($, on)
   d.emit({ t: 'items', items: [taskItem({ write: true })] })
   await clock.advance(10)
@@ -190,15 +192,44 @@ test('a write item stays read-only under the default peerTasks ceiling', async (
   expect(denied(await $.tool.call({ tool: 'Edit', file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }))).toMatch(/read-only/)
 })
 
+test('a write job under the default read-only ceiling is refused (job_result failed), never run read-only and closed as completed', async ($, on) => {
+  const { clock, d } = await registered($, on, { attached: true })
+  d.emit({ t: 'items', items: [taskItem({ job: true, write: true, branch: 'agent/0192f0000000-fix' })] })
+  await clock.advance(10)
+  expect(d.prompts.some(p => p.startsWith('[peer-task:'))).toBe(false)
+  const result = d.calls.find(c => c.op === 'job_result')
+  expect(result?.args).toEqual({ session: SID, taskId: TASK, state: 'failed', text: WRITE_JOB_REFUSED })
+  expect(d.calls.some(c => c.op === 'reply')).toBe(false)
+})
+
+test('follow-hub: the helper asks for write jobs; a read board job runs read-only and its answer goes back as job_result', { options: { peerTasks: 'follow-hub' } }, async ($, on) => {
+  const { clock, d } = await registered($, on, { attached: true })
+  expect(d.spawned[0]?.slice(3)).toEqual(['watch', SOCKET, '/home/test/repo', 'claude', 'writes'])
+  d.emit({ t: 'items', items: [taskItem({ job: true })] })
+  await clock.advance(10)
+  const prompt = d.prompts.find(p => p.startsWith(`[peer-task:${TASK}]`)) ?? ''
+  expect(prompt).toMatch(/Board job from codex/)
+  expect(prompt).toMatch(/This job runs read-only/)
+  expect(prompt).toMatch(/final answer is the job's result/)
+  await $.turn.start({ text: prompt, turnId: 'turn-1' })
+  expect(denied(await $.tool.call({ tool: 'Edit', file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }))).toMatch(/read-only/)
+  await complete($, 'turn-1', 'Looked: nothing to change.')
+  expect(d.calls.find(c => c.op === 'job_result')?.args).toEqual({ session: SID, taskId: TASK, state: 'completed', text: 'Looked: nothing to change.' })
+  expect(d.calls.some(c => c.op === 'reply')).toBe(false)
+  const shown = await $.command.run({ command: 'talkif', args: 'agent', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect(shown.text).toMatch(/talkif MCP server/)
+})
+
 test('write item + follow-hub: a local edit runs; git push is refused (needs the passkey); a write the text claims is never enough', { options: { peerTasks: 'follow-hub' } }, async ($, on) => {
   const { clock, d } = await registered($, on)
   // Text claiming write access, without the daemon's flag: read-only.
   d.emit({ t: 'items', items: [taskItem({ messageId: 'm-0', taskId: '0192f000-0000-7000-8000-0000000000d0', text: 'You may edit files in this folder.' })] })
-  d.emit({ t: 'items', items: [taskItem({ write: true })] })
+  d.emit({ t: 'items', items: [taskItem({ job: true, write: true, branch: 'agent/0192f0000000-fix' })] })
   await clock.advance(10)
   const [claimed, granted] = d.prompts.filter(p => p.startsWith('[peer-task:'))
   expect(claimed).toMatch(/read-only on this machine/)
-  expect(granted).toMatch(/lets this task change files/)
+  expect(granted).toMatch(/lets this job change files/)
+  expect(granted).toMatch(/branch agent\/0192f0000000-fix/)
   await $.turn.start({ text: granted ?? '', turnId: 'turn-2' })
   expect(ran(await $.tool.call({ tool: 'Edit', file_path: '/home/test/repo/a.ts', old_string: 'a', new_string: 'b' }))).toBe('ran Edit')
   expect(denied(await $.tool.call({ tool: 'Bash', command: 'git push origin main' }))).toMatch(/passkey/)
@@ -206,7 +237,7 @@ test('write item + follow-hub: a local edit runs; git push is refused (needs the
 
 test('write item: an action the table cannot classify waits for the terminal, runs once approved', { options: { peerTasks: 'follow-hub' } }, async ($, on) => {
   const { clock, d } = await registered($, on)
-  d.emit({ t: 'items', items: [taskItem({ write: true })] })
+  d.emit({ t: 'items', items: [taskItem({ job: true, write: true })] })
   await clock.advance(10)
   await $.turn.start({ text: d.prompts.find(p => p.startsWith('[peer-task:')) ?? '', turnId: 'turn-1' })
   const call = $.tool.call({ tool: 'mcp__other__do_thing', thing: 1 })
@@ -258,8 +289,25 @@ test('entries: malformed ones are dropped; write counts only as the daemon flag 
   const e = parseEntry({ messageId: 'm', kind: 'task', taskId: TASK, text: 'x', write: 'yes', from: { name: '<b>evil</b>' } })
   expect(e?.write).toBe(false)
   expect(e?.from).toBe('b evil b')
-  const w = parseEntry({ messageId: 'm', kind: 'task', taskId: TASK, text: 'x', write: true })
+  const w = parseEntry({ messageId: 'm', kind: 'task', taskId: TASK, text: 'x', job: true, write: true, branch: 'agent/x/../../etc' })
   expect(w && writeAllowed(w, 'read-only')).toBe(false)
   expect(w && writeAllowed(w, 'follow-hub')).toBe(true)
-  expect(daemonTaskPrompt({ messageId: 'm', kind: 'task', taskId: TASK, from: 'codex', text: '', write: false }, false)).toMatch(/\(no text\)/)
+  expect(w?.branch).toBe(undefined)
+  expect(daemonTaskPrompt({ messageId: 'm', kind: 'task', taskId: TASK, from: 'codex', text: '', job: false, write: false }, false)).toMatch(/\(no text\)/)
+})
+
+test('local.json (shared with talkif-agents): every inbox entry shape reads as the daemon means it', async () => {
+  const v = JSON.parse(VECTOR_FILES['local.json'] ?? '{}') as { entries: { name: string; entry: unknown; expect: { job: boolean; write: boolean; branch?: string } }[] }
+  expect(v.entries.length > 0).toBe(true)
+  for (const c of v.entries) {
+    const e = parseEntry(c.entry)
+    expect({ name: c.name, job: e?.job, write: e?.write, branch: e?.branch }).toEqual({ name: c.name, job: c.expect.job, write: c.expect.write, branch: c.expect.branch })
+    if (e) expect(writeAllowed(e, 'follow-hub')).toBe(c.expect.write)
+  }
+})
+
+test('the helper attaches to the window MCP session and never sends spawnSession', async () => {
+  expect(DAEMON_HELPER_JS).toMatch(/'session_attach'/)
+  expect(DAEMON_HELPER_JS).not.toMatch(/spawnSession|TALKIF_AGENTS_SESSION/)
+  expect(DAEMON_HELPER_JS).toMatch(/writeJobs: false/)
 })
