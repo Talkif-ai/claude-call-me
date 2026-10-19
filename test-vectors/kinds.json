@@ -23,6 +23,10 @@
     "file_request",
     "approval_update",
     "task_canceled",
-    "status"
+    "status",
+    "job_offer",
+    "job_revoked",
+    "job_unassignable",
+    "lead_moved"
   ]
 }
