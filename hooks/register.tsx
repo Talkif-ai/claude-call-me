@@ -4,6 +4,7 @@ import type { Register, EngineInterface, Timer, ToolCallInput } from 'claude-cod
 import type { TrafficEntry } from '../types'
 import {
   agentSections,
+  agentSessionEnd,
   agentSessionStart,
   agentToolDenial,
   agentToolDenialFallback,
@@ -55,7 +56,7 @@ import type { CallMeState, Check, Credentials, FlowRef, Problem } from './config
 const TOOL = 'call_me'
 // Sent as the User-Agent on every request to the backend and the bridge. Kept equal
 // to .claude-plugin/plugin.json's version: bump both together.
-export const VERSION = '0.26.0'
+export const VERSION = '0.27.0'
 const USER_AGENT = `talkif-call-me/${VERSION}`
 // Debug pane: this session's bridge traffic, newest last (`/cm traffic`; recorded only with the debug option).
 const TRAFFIC_PANE = 'call-me-traffic'
@@ -1521,6 +1522,7 @@ export const register: Register = (on, options) => {
 
   // Leave the bridge at once on exit instead of lingering until the 90 s TTL.
   on('session.end', async ($, e, next) => {
+    await agentSessionEnd().catch(() => undefined)
     for (const bridge of bridges) {
       if (!bridge.session) continue
       await bridgeFetch($, bridge, `/${bridge.session}`, 'DELETE').catch(() => undefined)

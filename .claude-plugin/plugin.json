@@ -1,6 +1,6 @@
 {
   "name": "call-me",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "description": "Talk to your Claude Code sessions by voice through the Talkif app: ask them questions, give them tasks, and let them call you when they need you.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -61,6 +61,12 @@
       "title": "Agent Bridge credential",
       "description": "Agent Bridge credential (tif_agent_…). /cm connect fills it for you; or paste one from the Talkif dashboard (Build → Agent Bridge). Makes this session one of your connected agents. Stored in your keychain, never in settings.json. Empty: Agent Bridge is off.",
       "sensitive": true
+    },
+    "localAgent": {
+      "type": "string",
+      "title": "Local agent",
+      "description": "When the talkif-agents daemon runs on this computer, the agent this session registers as (the name talkif-agents status shows). TALKIF_AGENT overrides it. Empty: claude.",
+      "default": ""
     },
     "peerTasks": {
       "type": "string",

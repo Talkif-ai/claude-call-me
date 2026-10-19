@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.27.0 — 2026-10-19
+
+- **Agent Bridge through the local daemon.** When the `talkif-agents` daemon runs on this computer, each session registers with it (its folder; the daemon adds repository, branch and label) instead of connecting to Talkif itself, and the daemon's items for this session are pushed into the open window (long-polled on a daemon without push). A read task is now answered in the window that holds the context, instead of by the daemon's separate headless run after 8 seconds. Messages, results and any other item the daemon gives this session reach the window too, as fenced context and a toast.
+- Tasks from the daemon run as marked turns, fenced as untrusted data, under the same read-only guard as other peer tasks; the turn's answer goes back to the daemon (`reply`) by itself. A task writes only when the daemon marks it as a write **and** `peerTasks` is `follow-hub`; then local edits run, an action the permission table cannot classify is approved once at the terminal, and every action that needs your passkey (push, merge, deploy, messages, secrets, payments) is refused.
+- New option `localAgent` (default `claude`, overridden by `TALKIF_AGENT`): the local agent a session registers as. The connection runs in a small `node` child of the session; peer text and answers go over stdin and the socket, never a command line.
+- Without the daemon nothing changes: the Connectors path and the direct Agent Bridge path work as before.
+
 ## 0.26.0 — 2026-10-17
 
 - **`/cm connect`: connect this session to Agent Bridge with one command.** It shows a one-time code and opens the Talkif dashboard; you check the code and press Approve, and the agent is created and its credential comes straight to this session (never through the browser). The credential is kept in the `agentKey` option (your keychain), or, when that option holds another agent or cannot be set, in a file only you can read under `~/.config/talkif/agents/`. Pasting a credential by hand still works. The Connectors setup is unchanged.

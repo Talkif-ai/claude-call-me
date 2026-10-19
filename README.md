@@ -165,6 +165,7 @@ Change them in `/config` → call-me. The API key is in `/plugin` → Installed 
 | `parallel` | off | queue more tasks from a call while one runs, instead of saying "still on the last task" |
 | `debug` | off | record this session's traffic for `/cm traffic` |
 | `agentKey` | empty | Agent Bridge credential (`tif_agent_…`), kept in the keychain; `/cm connect` fills it. Empty: Agent Bridge is off unless `/cm connect` stored a credential file for this folder |
+| `localAgent` | `claude` | with the local talkif-agents daemon: the agent this session registers as (`TALKIF_AGENT` overrides it) |
 | `peerTasks` | `read-only` | `read-only`: tasks from your other connected agents never change anything here. `follow-hub`: they may make local changes when you allow it in Talkif |
 | `voiceApprovals` | `deny` | `allow`: a yes said on your own Talkif call approves an outward action (push, merge, sending) here; never secrets, payments or deploys |
 
@@ -197,6 +198,15 @@ This machine checks the passkey's signature itself against the passkeys you conf
 **Keys of your other agents** are pinned the first time this machine sees them. If one changes, nothing is sent to or accepted from that agent until you compare fingerprints with the dashboard and run `/talkif agent trust <agent id>`.
 
 **Status line:** `Talkif · 3 agents online · inbox 1 · 2 running · 1 approval`. `/talkif agent` shows the details.
+
+### Through the local daemon (talkif-agents)
+
+When the `talkif-agents` daemon runs on this computer (its socket `~/.config/talkif/agents/daemon.sock` answers), each Claude Code session registers with it instead of talking to Talkif itself: the daemon holds the agent, its keys and the one connection to Talkif, and `/cm connect` is not needed. The session registers with its folder; the daemon adds the repository, branch and a label (shown by `/talkif agent` and in the status line as `Talkif · local <label>`). It registers as the agent named in the **Local agent** option (`localAgent`, default `claude`; `TALKIF_AGENT` overrides it). Without the daemon nothing changes.
+
+- **The open window takes its items.** Every item the daemon gives this session (tasks, messages, results) reaches it at once (pushed; a daemon without push is long-polled), so a read task is answered in this window, with its context, instead of by a separate headless run.
+- **Tasks** arrive as prompts marked as coming from another agent, their text fenced as data, and the answer of that turn goes back to the daemon by itself. Messages and results are added to the session's context and shown as a toast; they never start a turn.
+- **Read-only unless the daemon says otherwise.** A task changes files only when the daemon marks it as a write (a board job in its own worktree) **and** `peerTasks` is `follow-hub`. Then reads and local edits in the folder run; an action the permission table cannot classify waits for you in the Agent Bridge pane (*Approve once* or *Deny*); push, merge, deploy, messages, secrets and payments are refused, because approvals through the local daemon carry no passkey.
+- The plugin holds the connection in a small `node` child process of the session, which ends with the session (and the daemon then ends the session's registration); nothing peer-sent is ever put on a command line.
 
 ## Other connectors
 

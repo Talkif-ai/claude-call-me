@@ -1,7 +1,9 @@
 // Agent Bridge: this session as one of the person's connected agents. Active
-// only when a tif_agent_ credential is set (the agentKey option, or
-// TALKIF_AGENT_KEY in the developer file); without one nothing here registers a
-// tool, sends a request or changes a prompt.
+// when the local talkif-agents daemon answers on its socket (daemon-bridge.ts: the
+// daemon holds the agent; this session registers with it), else only when a
+// tif_agent_ credential is set (the agentKey option, or TALKIF_AGENT_KEY in the
+// developer file); with neither nothing here registers a tool, sends a request or
+// changes a prompt.
 //
 // Outbound HTTPS only: a long-poll of the agent's inbox on Talkif, with a session
 // proven by the agent's own private key. Message bodies are sealed end to end to
@@ -10,10 +12,8 @@
 // ceiling (peerTasks) and Talkif granted the task a write; anything outward is
 // held for the person's approval, bound to the exact action (tiers.ts).
 
-import { atom, read, update } from 'claude-code'
+import { atom, read } from 'claude-code'
 import type { EngineInterface, On, PluginOptions, Timer, ToolCallInput } from 'claude-code'
-
-import type { AgentCard } from '../types'
 
 import { AGENT_KEY_PREFIX, agentRefusalReason, problemText, resolveAgentCredentials } from './config'
 import type { AgentCredentials, Problem } from './config'
@@ -40,6 +40,22 @@ import {
 } from './protocol'
 import type { A2AMessage, AgentStatus, Envelope, InboxItem, LocalCeiling, OwnerKey, Peer, PeerMode, PeerPin, Refusal, SelfInfo, TaskInfo } from './protocol'
 import { CallTaskScope, readOnlyDenial } from './read-only'
+import {
+  daemonActive,
+  daemonCommandText,
+  daemonCovers,
+  daemonSections,
+  daemonSocket,
+  daemonSpawnSettled,
+  daemonSpawnStarted,
+  daemonStart,
+  daemonStatus,
+  daemonStop,
+  daemonToolDenial,
+  daemonToolDenialFallback,
+  daemonTurnComplete,
+  daemonTurnStart,
+} from './daemon-bridge'
 import { actionHash, agentFingerprint, b64url, fromB64url, generateKeyPair, open, randomBytes, sessionAad, sessionProof, sha256Hex, toHex, uuidv7 } from './tap1'
 import type { KeyPair } from './tap1'
 import { OwnSecrets } from './scrub'
@@ -47,15 +63,14 @@ import { CREDENTIALS_DIR, checkedId, credentialPath, devFileText, fileCredential
 import { channelsOf, classifyAction, isTier, rank, shellCwdsAfter } from './tiers'
 import type { Channels, Tier } from './tiers'
 import { fenceUntrusted, peerNote } from './untrusted'
+import { AGENT_PANE, closeCard, pressCard, showCard } from './cards'
 // One status line for the plugin: register.tsx composes it (this module's part included).
 // A circular import on purpose; both are only called once the modules have loaded.
 import { VERSION, refreshStatus } from './register'
 
-const PANE = 'call-me-agent'
-const cards = atom({ plugin: 'call-me', key: 'agentCards' } as const, [])
-// What each card's buttons do; kept here (not in state, which holds plain data).
-const cardActions = new Map<string, (button: string) => Promise<void>>()
 
+// The pane's cards (cards.ts writes them; the same plugin state, read here to draw).
+const cards = atom({ plugin: 'call-me', key: 'agentCards' } as const, [])
 const TOOL_PREFIX = 'mcp__call-me__'
 const TOOLS = ['list_agents', 'ask_agent', 'tell_agent', 'delegate', 'task_status', 'check_inbox'] as const
 // Found anywhere in the turn's text (a queued prompt can be merged after typed text):
@@ -135,6 +150,7 @@ const peerScope = new CallTaskScope()
 
 /** The Agent Bridge part of the status line, or undefined when no agent credential is set. */
 export function personalAgentStatus(): string | undefined {
+  if (daemonActive()) return daemonStatus()
   if (!rt) return undefined
   const status: AgentStatus = {
     online: rt.peers.filter(p => p.online).length,
@@ -414,26 +430,6 @@ async function pinOwnerKeys($: EngineInterface, asked: boolean): Promise<string>
     $.ui.log('call-me (Agent Bridge): your passkeys are confirmed on this machine.')
   })
   return 'Check the fingerprints in the Agent Bridge pane and confirm them there.'
-}
-
-// ---- the pane: cards only the person answers (approvals, passkeys, binding) ----
-
-async function showCard($: EngineInterface, card: AgentCard, action: (button: string) => Promise<void>) {
-  cardActions.set(card.id, action)
-  await update($, cards, list => [...(list ?? []).filter(c => c.id !== card.id), card])
-  await $.ui.open({ id: PANE, title: 'Agent Bridge', focus: true, rows: Math.min(20, card.lines.length + 8) })
-}
-
-async function closeCard($: EngineInterface, id: string) {
-  cardActions.delete(id)
-  const left = await update($, cards, list => (list ?? []).filter(c => c.id !== id))
-  if (left.length === 0) await $.ui.close({ id: PANE }).catch(() => undefined)
-}
-
-async function pressCard($: EngineInterface, id: string, button: string) {
-  const action = cardActions.get(id)
-  await closeCard($, id)
-  if (action) await action(button).catch(err => $.ui.log(`call-me (Agent Bridge): ${String(err)}`))
 }
 
 // ---- receiving ----
@@ -1120,6 +1116,7 @@ async function standby($: EngineInterface) {
 // ---- /talkif agent ----
 
 async function agentCommand($: EngineInterface, args: string): Promise<string> {
+  if (daemonActive()) return args.trim() === 'agent' ? daemonCommandText() : 'This session uses the local Agent Bridge daemon: /talkif agent shows it; keys, trust and binding are managed with talkif-agents.'
   const r = rt
   if (!r) return 'Agent Bridge is off: no agent credential is set. Run /cm connect to connect this session.'
   const [a, b, c, extra] = args.trim().split(/\s+/).filter(Boolean)
@@ -1184,6 +1181,7 @@ let agentKeyOption = ''
 let apiUrlOption = ''
 let peerCeilingOption: LocalCeiling = 'read-only'
 let voiceApprovalsOption: 'deny' | 'allow' = 'deny'
+let localAgentOption = 'claude'
 /** A credential /cm connect brought into this activation (kept in memory only). */
 let connectedKey: string | undefined
 let sessionCwd: string | undefined
@@ -1202,6 +1200,7 @@ export async function agentSessionRoot($: EngineInterface): Promise<string> {
 
 /** Whether /cm connect may connect this session now, and if not why. */
 export function connectBlocker(): string | undefined {
+  if (daemonActive()) return 'This session reaches Agent Bridge through the local talkif-agents daemon already; /talkif agent shows it.'
   const r = rt
   if (!r || r.problem || r.bound === 'elsewhere' || r.stopped) return undefined
   if (r.sid) return `This session is already connected to Agent Bridge${r.self?.name ? ` as ${r.self.name}` : ''}. /talkif agent shows it.`
@@ -1238,6 +1237,19 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
   sessionCwd = cwd
   try {
     const home = await homeDir($)
+    // The local talkif-agents daemon answers on its socket: this session goes through it
+    // instead of the hub (the daemon holds the agent's keys and its hub connection).
+    const socket = connectedKey ? undefined : await daemonSocket($, home)
+    if (socket) {
+      const root = await sessionRoot($, cwd)
+      const start = (await $.fs.stat(cwd, { resolve: true }).catch(() => undefined))?.realPath ?? cwd
+      if (!talkifRegistered) {
+        await $.command.register({ name: 'talkif', description: 'Talkif Agent Bridge: /talkif agent shows this session as a connected agent.' })
+        talkifRegistered = true
+      }
+      await daemonStart($, { socket, root, startCwd: start.replace(/\/+$/, '') || '/', agent: localAgentOption, ceiling: peerCeilingOption })
+      return
+    }
     const devFile = await devFileText($, home)
     // Without credential files (no /cm connect yet) the folder is looked up only when needed.
     const hasFiles = !connectedKey && (await $.fs.exists(`${home}/${CREDENTIALS_DIR}`))
@@ -1318,6 +1330,7 @@ export async function agentSessionStart($: EngineInterface, cwd: string): Promis
 
 /** System prompt sections: who this session can reach, and what waits from them (as data). */
 export function agentSections(): { id: string; text: string; scope: 'session' }[] {
+  if (daemonActive()) return daemonSections()
   const r = rt
   if (!r?.sid) return []
   const sections: { id: string; text: string; scope: 'session' }[] = []
@@ -1329,14 +1342,20 @@ export function agentSections(): { id: string; text: string; scope: 'session' }[
   return sections
 }
 
+/** Session end: the local daemon session ends with its helper (nothing to do for the hub path). */
+export async function agentSessionEnd(): Promise<void> {
+  await daemonStop()
+}
+
 /** Whether a tool call or spawn in this loop belongs to a task from another agent. */
-export const inPeerTask = (agentId: string | undefined): boolean => rt !== undefined && peerScope.covers(agentId)
+export const inPeerTask = (agentId: string | undefined): boolean => daemonCovers(agentId) || (rt !== undefined && peerScope.covers(agentId))
 
 /**
  * tool.call: what a task from another agent may run here, before Claude Code's own
  * permission check. Never allows by itself: undefined goes on to the normal path.
  */
 export async function agentToolDenial($: EngineInterface, e: ToolCallInput): Promise<string | undefined> {
+  if (daemonActive()) return daemonToolDenial($, e)
   if (!rt) return undefined
   // A call refused here never runs, so it moves no shell; anything else may run.
   const denial = peerScope.covers(e.agentId) ? await peerGuard($, e, rt.root) : undefined
@@ -1346,15 +1365,17 @@ export async function agentToolDenial($: EngineInterface, e: ToolCallInput): Pro
 
 /** The same judged from e alone (a re-entry, a failure): read-only inside a peer task. */
 export function agentToolDenialFallback(e: ToolCallInput): string | undefined {
+  if (daemonActive()) return daemonToolDenialFallback(e)
   const denial = inPeerTask(e.agentId) ? readOnlyDenial(guardedCall(e, inputOf(e)), 'peer') : undefined
   if (denial === undefined) trackShell(e)
   return denial
 }
 
-export const peerSpawnStarted = (parentAgentId: string | undefined): boolean => rt !== undefined && peerScope.spawnStarted(parentAgentId)
-export const peerSpawnSettled = (covered: boolean, agentId: string | undefined): void => peerScope.spawnSettled(covered, agentId)
+export const peerSpawnStarted = (parentAgentId: string | undefined): boolean => (daemonActive() ? daemonSpawnStarted(parentAgentId) : rt !== undefined && peerScope.spawnStarted(parentAgentId))
+export const peerSpawnSettled = (covered: boolean, agentId: string | undefined): void => (daemonActive() ? daemonSpawnSettled(covered, agentId) : peerScope.spawnSettled(covered, agentId))
 
 export async function agentTurnStart($: EngineInterface, e: { text: string; turnId: string; agentId?: string }): Promise<void> {
+  if (daemonActive()) return daemonTurnStart(e)
   if (e.agentId || !rt) return
   const mark = PEER_MARK.exec(e.text)
   if (!mark && !e.text.includes(PEER_MARK_ANY)) {
@@ -1371,6 +1392,7 @@ export async function agentTurnStart($: EngineInterface, e: { text: string; turn
 }
 
 export async function agentTurnComplete($: EngineInterface, e: { turnId: string; agentId?: string; reason: string; answer: string }): Promise<void> {
+  if (daemonActive()) return daemonTurnComplete($, e)
   if (e.agentId || !rt) return
   const runNow = [...rt.runs.values()].find(r => r.turnId === e.turnId)
   peerScope.endTurn(e.turnId)
@@ -1389,6 +1411,7 @@ export function registerPersonalAgent(on: On, options: PluginOptions): void {
   apiUrlOption = typeof options.apiUrl === 'string' ? options.apiUrl : ''
   peerCeilingOption = options.peerTasks === 'follow-hub' ? 'follow-hub' : 'read-only'
   voiceApprovalsOption = options.voiceApprovals === 'allow' ? 'allow' : 'deny'
+  localAgentOption = typeof options.localAgent === 'string' && options.localAgent.trim() ? options.localAgent.trim() : 'claude'
 
   for (const name of TOOLS) {
     on('tool.call', { tool: `${TOOL_PREFIX}${name}` }, async ($, e) => {
@@ -1399,7 +1422,7 @@ export function registerPersonalAgent(on: On, options: PluginOptions): void {
 
   on('command.run', { command: 'talkif' }, async ($, e) => ({ text: await agentCommand($, e.args) }))
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: AGENT_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const list = await read($, cards)
     if (list.length === 0) return <Text dimColor>Nothing waits for you.</Text>
