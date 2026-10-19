@@ -27,6 +27,7 @@
     "job_offer",
     "job_revoked",
     "job_unassignable",
-    "lead_moved"
+    "lead_moved",
+    "owner_control"
   ]
 }

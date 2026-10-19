@@ -34,26 +34,27 @@ export const REFUSALS = [
   'already_bid', 'another_approval_announced', 'approval_denied', 'approval_expired', 'approval_mismatch', 'approval_required',
   'approval_used', 'bad_ciphertext', 'bid_round_closed', 'board_key_exists', 'board_key_missing', 'body_too_large',
   'budget_exhausted', 'caller_did_not_answer', 'canceled', 'cannot_revoke_phone', 'card_not_set', 'channel_sockets_limit',
-  'connect_already_decided', 'connect_batch_too_large', 'connect_code_invalid', 'credential_already_issued', 'credential_revoked',
-  'cycle', 'deadline_passed', 'dependency_failed', 'depth_limit', 'envelope_too_large', 'expired', 'fence_required',
-  'file_unavailable', 'frame_too_large', 'guard_unavailable', 'hello_required', 'hidden_characters', 'idempotency_conflict',
-  'inbox_full', 'invalid_envelope', 'invalid_frame', 'invalid_kind', 'invalid_transition', 'job_offered', 'job_taken', 'job_waiting',
-  'key_already_set', 'key_not_set', 'lease_expired', 'lease_lost', 'live_agents_limit', 'may_not_delegate',
-  'mode_forbids_delegation', 'mode_forbids_write', 'no_bidder', 'no_capable_agent', 'no_default_lead', 'no_personal_account',
-  'not_announced_here', 'not_enabled', 'not_lead', 'not_owner_call', 'not_personal_call', 'not_task_party', 'offer_expired',
-  'offer_mismatch', 'open_tasks_limit', 'owner_proof_required', 'path_invalid', 'path_locked', 'paused', 'plan_invalid',
-  'plan_not_confirmed', 'plan_revision_changed', 'rate_limited', 'receiver_mismatch', 'relay_not_allowed', 'request_closed',
+  'connect_already_decided', 'connect_batch_too_large', 'connect_code_invalid', 'control_invalid', 'control_proof_invalid',
+  'credential_already_issued', 'credential_revoked', 'cycle', 'deadline_passed', 'dependency_failed', 'depth_limit',
+  'envelope_too_large', 'expired', 'fence_required', 'file_unavailable', 'frame_too_large', 'guard_unavailable',
+  'hello_required', 'hidden_characters', 'idempotency_conflict', 'inbox_full', 'invalid_envelope', 'invalid_frame',
+  'invalid_kind', 'invalid_transition', 'job_offered', 'job_taken', 'job_waiting', 'key_already_set', 'key_not_set',
+  'lease_expired', 'lease_lost', 'live_agents_limit', 'may_not_delegate', 'mode_forbids_delegation', 'mode_forbids_write',
+  'no_bidder', 'no_capable_agent', 'no_default_lead', 'no_personal_account', 'not_announced_here', 'not_enabled', 'not_lead',
+  'not_owner_call', 'not_personal_call', 'not_task_party', 'offer_expired', 'offer_mismatch', 'open_tasks_limit',
+  'owner_proof_required', 'path_invalid', 'path_locked', 'paused', 'person_proof_invalid', 'plan_invalid', 'plan_not_confirmed',
+  'plan_revision_changed', 'rate_limited', 'receiver_mismatch', 'relay_not_allowed', 'request_closed',
   'sender_may_not_assign_writes', 'session_busy', 'session_invalid', 'session_label_taken', 'session_meta_invalid',
-  'session_not_found', 'session_superseded', 'sessions_limit', 'slow_down', 'socket_person_mismatch', 'spawn_failed', 'spawn_limit',
-  'spawn_not_allowed', 'stale_fence', 'target_not_found', 'too_many_paths', 'too_many_recipients', 'viewer_not_found',
-  'viewer_proof_invalid', 'viewers_limit', 'voice_code_missing',
+  'session_not_found', 'session_superseded', 'sessions_limit', 'slow_down', 'socket_person_mismatch', 'spawn_failed',
+  'spawn_limit', 'spawn_not_allowed', 'stale_fence', 'target_not_found', 'too_many_paths', 'too_many_recipients',
+  'viewer_not_confirmed', 'viewer_not_found', 'viewer_proof_invalid', 'viewers_limit', 'voice_code_missing',
 ] as const
 export type Refusal = (typeof REFUSALS)[number]
 
 export const CLIENT_KINDS = ['message', 'task', 'status', 'result'] as const
-// job_offer, job_revoked, job_unassignable and lead_moved are board kinds: this plugin holds no board role on the
+// job_offer, job_revoked, job_unassignable and lead_moved are board kinds, owner_control is for the daemon: this plugin holds no board role on the
 // direct hub path, so they are hints only (acked, nothing runs on them).
-export const HUB_KINDS = ['bid_request', 'bid_outcome', 'file_request', 'approval_update', 'task_canceled', 'job_offer', 'job_revoked', 'job_unassignable', 'lead_moved'] as const
+export const HUB_KINDS = ['bid_request', 'bid_outcome', 'file_request', 'approval_update', 'task_canceled', 'job_offer', 'job_revoked', 'job_unassignable', 'lead_moved', 'owner_control'] as const
 export const KINDS = [...CLIENT_KINDS, ...HUB_KINDS] as const
 /** What the hub itself may send with no body: its own kinds, and `status` reflecting a task transition it made (failed, rejected, expired, canceled). */
 export const HUB_SENDABLE = [...HUB_KINDS, 'status'] as const

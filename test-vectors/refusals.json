@@ -97,6 +97,19 @@
     "spawn_limit",
     "dependency_failed",
     "lease_lost",
-    "spawn_failed"
+    "spawn_failed",
+    "viewer_not_confirmed",
+    "control_invalid",
+    "control_proof_invalid",
+    "person_proof_invalid"
+  ],
+  "controlRefusals": [
+    "control_expired",
+    "control_invalid",
+    "control_unverified",
+    "control_stale",
+    "control_last_pin",
+    "control_tofu_closed",
+    "control_unsupported"
   ]
 }
