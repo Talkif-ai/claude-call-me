@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.29.0 — 2026-10-19
+
+- **A question to this window is answered from this window, even while it works.** With `talkif-agents` 0.5.2 or newer, a read-only question another agent sends to this window through the local daemon is answered at once by a side agent of this conversation: a fork of the conversation as it stands, with every tool denied and a strict read-only prompt (the question fenced as untrusted data). The main conversation goes on untouched. Before, a question that arrived while the window was busy waited behind its turn and was often answered by the daemon's separate headless run, without this window's context, while it still looked like this window's answer. The answer goes back to the daemon marked as this window's side answer, and a short log line shows it was sent. When the fork cannot answer (nothing to fork yet in a new session, an API error), the question runs as a read-only turn of the window as before. Board jobs and write jobs always run in the main conversation.
+- **The window knows what it answered.** At the next prompt that enters this conversation (yours, or the next task turn), one short fenced note says what Agent Bridge answered for this window while it was working: who asked, the question and the answer on one line each, at most five, then "and N more". It is context for the model only, never instructions, and your prompt is unchanged.
+- The helper subscribes with `sideAnswers: true`; an older daemon ignores it and nothing changes. The shared test vectors are unchanged.
+
 ## 0.28.1 — 2026-10-19
 
 - **A board job claimed again is no longer lost.** The handed log recorded items by message id alone, and the daemon sends a new claim of the same board job with the same message id. When a job was claimed again after an earlier hand-off, the plugin confirmed it to the daemon without showing it, and the new claim never reached a window. A board job is now recorded per claim (message id, task id and the time the daemon received that claim); a repeat of the same claim is still confirmed without being shown twice. Messages and plain tasks are recorded by message id as before.

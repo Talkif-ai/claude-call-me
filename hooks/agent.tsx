@@ -44,6 +44,7 @@ import {
   daemonActive,
   daemonCommandText,
   daemonCovers,
+  daemonPromptContext,
   daemonSections,
   daemonSocket,
   daemonSpawnSettled,
@@ -1421,6 +1422,21 @@ export function registerPersonalAgent(on: On, options: PluginOptions): void {
   }
 
   on('command.run', { command: 'talkif' }, async ($, e) => ({ text: await agentCommand($, e.args) }))
+
+  // The local daemon's side answers ride along with the next prompt that enters this
+  // conversation: fenced context the model reads, the prompt itself unchanged.
+  on('prompt.submit', async ($, e, next) => {
+    const note = daemonActive() ? daemonPromptContext() : undefined
+    if (!note) return next(e)
+    try {
+      const result = await next({ ...e, context: [...(e.context ?? []), note.text] })
+      if (result.drop !== undefined) note.putBack()
+      return result
+    } catch (err) {
+      note.putBack()
+      throw err
+    }
+  })
 
   on('ui.render', { component: 'Pane', requestId: AGENT_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)

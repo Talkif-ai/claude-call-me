@@ -386,7 +386,8 @@ const watch = async (path, cwd, as, writeJobs) => {
       try {
         let s
         try {
-          s = await l.call('subscribe', Object.assign({ confirm: true }, base), 10000)
+          // sideAnswers: this window answers plain read tasks with a side agent (talkif-agents ≥ 0.5.2; older ones ignore it).
+          s = await l.call('subscribe', Object.assign({ confirm: true, sideAnswers: true }, base), 10000)
         } catch (e) {
           // A daemon without delivery confirmation: subscribe the old way (items acked when pushed).
           if (e.code !== 'bad_request') throw e
