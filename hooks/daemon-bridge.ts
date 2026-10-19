@@ -50,6 +50,9 @@ const SEEN_MAX = 1_000
 const APPROVAL_INPUT_MAX = 8_192
 const APPROVAL_WAIT_S = 600
 const LOCAL_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+/** The helper's handed log of a session (under ~/.config/talkif/agent/). */
+const HANDED_LOG = /^\/[^\0\n]*\/\.config\/talkif\/agent\/handed-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.log$/
+const MESSAGE_ID = /^[A-Za-z0-9:._-]{1,128}$/
 
 /** One daemon inbox entry, checked (the daemon fences peer text; it is still only data here). */
 export type DaemonEntry = {
@@ -131,6 +134,8 @@ type State = {
   where: string | undefined
   /** This window's MCP server's session (attached), not one of the plugin's own. */
   attached: boolean
+  /** The handed log of this session (the helper confirms an item to the daemon once its messageId is here). */
+  handedLog: string | undefined
   mode: 'connecting' | 'push' | 'poll' | 'down'
   note: string | undefined
   problem: string | undefined
@@ -189,6 +194,7 @@ export async function daemonStart($: EngineInterface, opts: { socket: string; ro
     label: undefined,
     where: undefined,
     attached: false,
+    handedLog: undefined,
     mode: 'connecting',
     note: 'connecting to the local daemon…',
     problem: undefined,
@@ -260,6 +266,8 @@ async function onEvent($: EngineInterface, line: string): Promise<void> {
       if (!sid || !isId(sid)) return
       r.sessionId = sid
       r.attached = e.attached === true
+      const log = str(e.handedLog)
+      r.handedLog = log && HANDED_LOG.test(log) && log.endsWith(`/handed-${sid}.log`) ? log : undefined
       r.label = str(e.label) ? displayName(e.label, 32) : undefined
       r.where = [str(e.repo) ?? str(e.folder), str(e.branch)].filter(Boolean).map(w => displayName(w, 64, '/')).join(' @ ') || undefined
       r.problem = undefined
@@ -304,11 +312,27 @@ function keep(r: State, item: Received): void {
   r.received.splice(0, Math.max(0, r.received.length - KEEP_RECEIVED))
 }
 
+/**
+ * The window has this item (step 3 of the delivery confirmation): its messageId goes into the
+ * session's handed log, and the helper then confirms it to the daemon. Never before the
+ * hand-off; an item that is already in the log is confirmed by the helper without showing it.
+ */
+async function markHanded($: EngineInterface, r: State, messageId: unknown): Promise<void> {
+  if (!r.handedLog || typeof messageId !== 'string' || !MESSAGE_ID.test(messageId)) return
+  const res = await $.process
+    .run(['sh', '-c', 'umask 077 && mkdir -p "$(dirname "$1")" && cat >> "$1"', 'sh', r.handedLog], { stdin: `${Date.now()} ${messageId}\n`, timeoutMs: 10_000 })
+    .catch(() => undefined)
+  if (!res || res.exitCode !== 0) $.ui.log('call-me (Agent Bridge): an item could not be confirmed to the local daemon; it may be shown once more.', { to: 'debug' })
+}
+
 async function onItem($: EngineInterface, raw: unknown): Promise<void> {
   const r = ds
+  if (!r) return
   const entry = parseEntry(raw)
-  if (!r || !entry) return
-  if (r.seen.has(entry.messageId)) return
+  const rawId = typeof raw === 'object' && raw !== null ? (raw as { messageId?: unknown }).messageId : undefined
+  // Not an entry this plugin can show: confirmed, so the daemon does not push it again.
+  if (!entry) return markHanded($, r, rawId)
+  if (r.seen.has(entry.messageId)) return markHanded($, r, entry.messageId)
   r.seen.add(entry.messageId)
   for (const old of r.seen) {
     if (r.seen.size <= SEEN_MAX) break
@@ -318,7 +342,7 @@ async function onItem($: EngineInterface, raw: unknown): Promise<void> {
     const run = r.runs.get(entry.taskId)
     if (run) run.canceled = true
     else r.canceled.add(entry.taskId)
-    return
+    return markHanded($, r, entry.messageId)
   }
   // A task the daemon already refused (or ended) comes as a task entry with its state: a note only.
   if (entry.kind === 'task' && entry.taskId && (entry.state === undefined || entry.state === 'working' || entry.state === 'submitted')) {
@@ -329,16 +353,24 @@ async function onItem($: EngineInterface, raw: unknown): Promise<void> {
       const sent = r.sessionId ? await callDaemon($, r.socket, 'job_result', { session: r.sessionId, taskId: entry.taskId, state: 'failed', text: WRITE_JOB_REFUSED }) : undefined
       if (!sent?.ok) $.ui.log(`call-me (Agent Bridge): the write job from ${entry.from} could not be refused (${sent ? `${sent.code}: ${sent.message}` : 'not registered'}).`)
       $.ui.toast(`Agent Bridge: a write job from ${entry.from} was refused (peerTasks is read-only)`)
-      return
+      return markHanded($, r, entry.messageId)
     }
     r.runs.set(entry.taskId, { taskId: entry.taskId, from: entry.from, job: entry.job, write, turnId: undefined, canceled: r.canceled.delete(entry.taskId) })
     await refreshStatus($)
-    await $.prompt.submit({ text: daemonTaskPrompt({ ...entry, taskId: entry.taskId }, write) })
-    return
+    try {
+      await $.prompt.submit({ text: daemonTaskPrompt({ ...entry, taskId: entry.taskId }, write) })
+    } catch (err) {
+      // Not in the window: not confirmed either, so the daemon pushes it again.
+      r.runs.delete(entry.taskId)
+      r.seen.delete(entry.messageId)
+      throw err
+    }
+    return markHanded($, r, entry.messageId)
   }
   // Messages, results of tasks this session gave, approvals and anything newer: context, shown once.
   keep(r, { at: new Date().toISOString().slice(0, 16).replace('T', ' '), from: entry.from, kind: entry.kind, ...(entry.taskId ? { taskId: entry.taskId } : {}), text: entry.text.slice(0, 4_000) })
   $.ui.toast(`Agent Bridge: ${entry.kind.replace('_', ' ')} from ${entry.from}`)
+  await markHanded($, r, entry.messageId)
 }
 
 // ---- turns ----

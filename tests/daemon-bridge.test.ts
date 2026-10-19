@@ -8,6 +8,7 @@ import { VECTOR_FILES } from './vectors'
 
 const SOCKET = '/home/test/.config/talkif/agents/daemon.sock'
 const SID = '0192f000-0000-4000-8000-0000000000aa'
+const HANDED = `/home/test/.config/talkif/agent/handed-${SID}.log`
 const TASK = '0192f000-0000-7000-8000-0000000000d1'
 const PANE_PROPS = { title: 'Agent Bridge', isFocused: true, bodyColumns: 100, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
 
@@ -25,11 +26,13 @@ type Daemon = {
   commands: string[]
   logs: string[]
   status: string[]
+  /** Lines appended to a handed log, with how many prompts had been submitted then. */
+  handed: { path: string; line: string; promptsBefore: number }[]
 }
 
 /** A machine whose local daemon answers, and a fake helper child the test writes events into. */
 function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean } = {}): Daemon {
-  const d: Daemon = { emit: () => undefined, calls: [], argv: [], spawned: [], urls: [], prompts: [], tools: [], commands: [], logs: [], status: [] }
+  const d: Daemon = { emit: () => undefined, calls: [], argv: [], spawned: [], urls: [], prompts: [], tools: [], commands: [], logs: [], status: [], handed: [] }
   const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', (_$, e) => {
     const argv = [...e.argv]
@@ -38,6 +41,10 @@ function fakeDaemon(on: On, opts: { statusOk?: boolean; socket?: boolean } = {})
     if (cmd === 'printenv') return out('/home/test\n')
     if (cmd === 'uname') return out('Linux\n')
     if (cmd === 'sleep') return out('')
+    if (cmd === 'sh' && (argv[2] ?? '').includes('cat >> "$1"')) {
+      d.handed.push({ path: argv[4] ?? '', line: e.init?.stdin ?? '', promptsBefore: d.prompts.length })
+      return out('')
+    }
     if (cmd === 'node' && argv[3] === 'call') {
       const req = JSON.parse(e.init?.stdin ?? '{}') as { op: string; args: Record<string, unknown> }
       d.calls.push(req)
@@ -114,7 +121,7 @@ async function registered($: Engine, on: On, opts: { statusOk?: boolean; socket?
   const d = fakeDaemon(on, opts)
   await $.session.start({ cwd: '/home/test/repo', surface: null, isInteractive: true })
   await clock.advance(10)
-  d.emit({ t: 'started', sessionId: SID, attached: opts.attached === true, agent: 'claude', label: 'repo', folder: 'repo', repo: 'repo', branch: 'main' })
+  d.emit({ t: 'started', sessionId: SID, attached: opts.attached === true, handedLog: HANDED, agent: 'claude', label: 'repo', folder: 'repo', repo: 'repo', branch: 'main' })
   d.emit({ t: 'mode', mode: 'push' })
   await clock.advance(10)
   return { clock, d }
@@ -310,4 +317,48 @@ test('the helper attaches to the window MCP session and never sends spawnSession
   expect(DAEMON_HELPER_JS).toMatch(/'session_attach'/)
   expect(DAEMON_HELPER_JS).not.toMatch(/spawnSession|TALKIF_AGENTS_SESSION/)
   expect(DAEMON_HELPER_JS).toMatch(/writeJobs: false/)
+})
+
+test('delivery confirmation: an item goes into the handed log only after it was handed to the window; a repeat is logged again, never shown twice', async ($, on) => {
+  const { clock, d } = await registered($, on)
+  d.emit({ t: 'items', items: [taskItem({ pushId: '0192f000-0000-4000-8000-0000000000b1', attempt: 1, redelivered: false })] })
+  await clock.advance(10)
+  expect(d.prompts.filter(p => p.startsWith('[peer-task:')).length).toBe(1)
+  expect(d.handed.length).toBe(1)
+  expect(d.handed[0]?.path).toBe(HANDED)
+  expect(d.handed[0]?.line).toMatch(/^\d+ m-1\n$/)
+  // Logged after the turn was submitted, never before.
+  expect(d.handed[0]?.promptsBefore).toBe(d.prompts.length)
+  // The daemon pushed it again (no confirmation reached it): confirmed again, not shown again.
+  d.emit({ t: 'items', items: [taskItem({ pushId: '0192f000-0000-4000-8000-0000000000b2', attempt: 2, redelivered: true })] })
+  await clock.advance(10)
+  expect(d.prompts.filter(p => p.startsWith('[peer-task:')).length).toBe(1)
+  expect(d.handed.length).toBe(2)
+  // A message is context: logged once it is kept and toasted.
+  d.emit({ t: 'items', items: [{ messageId: 'm-2', kind: 'message', from: { name: 'codex' }, text: 'fyi', receivedAt: '2026-10-19T10:00:00Z' }] })
+  await clock.advance(10)
+  expect(d.handed.map(h => h.line.split(' ')[1]?.trim())).toEqual(['m-1', 'm-1', 'm-2'])
+  // Nothing peer-sent on a command line: the id goes on stdin.
+  expect(d.argv.some(a => a.some(w => w.includes('m-2')))).toBe(false)
+})
+
+test('delivery confirmation: a handed log outside this session is ignored (nothing written)', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const d = fakeDaemon(on, {})
+  await $.session.start({ cwd: '/home/test/repo', surface: null, isInteractive: true })
+  await clock.advance(10)
+  d.emit({ t: 'started', sessionId: SID, attached: false, handedLog: '/tmp/elsewhere.log', agent: 'claude' })
+  d.emit({ t: 'mode', mode: 'push' })
+  d.emit({ t: 'items', items: [taskItem()] })
+  await clock.advance(10)
+  expect(d.prompts.filter(p => p.startsWith('[peer-task:')).length).toBe(1)
+  expect(d.handed).toEqual([])
+})
+
+test('the helper subscribes with delivery confirmation, falls back without it, and confirms with delivered', () => {
+  expect(DAEMON_HELPER_JS).toMatch(/confirm: true/)
+  expect(DAEMON_HELPER_JS).toMatch(/'delivered'/)
+  expect(DAEMON_HELPER_JS).toMatch(/handed-/)
+  expect(DAEMON_HELPER_JS).toMatch(/mode: 0o600/)
 })

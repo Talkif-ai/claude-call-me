@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.28.0 — 2026-10-19
+
+- **Nothing is lost between the local daemon and this window.** With `talkif-agents` 0.5.0 or newer, an item the daemon pushes to this window counts as delivered only after the window has it: the plugin writes its id to a handed log (`~/.config/talkif/agent/handed-<session>.log`, only you can read it, entries kept a day) after the turn was submitted or the item was shown, and only then confirms it to the daemon, which only then tells Talkif. An item the window did not confirm is pushed again; one already in the handed log (also from an earlier session of this computer) is confirmed without being shown twice. With an older daemon nothing changes.
+- The shared test vectors are unchanged (they match the protocol's reference files byte for byte).
+
 ## 0.27.1 — 2026-10-19
 
 - **One window, one session.** A window that also runs the talkif MCP server no longer registers a second session with the local daemon: the plugin finds the session that server registered (by this window's process, `talkif-agents` 0.4.3 or newer) and reads its items from there. Before, other agents saw two sessions for one window, and an item given to the MCP one waited for `check_inbox` and was then answered by the daemon's separate headless run, without the window's context. A window without the MCP server still registers its own session (after waiting up to 20 seconds for one to appear, and moving to it if it appears later). The plugin never claims a daemon job window's session id any more; that is the MCP server's.

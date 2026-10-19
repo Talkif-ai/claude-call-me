@@ -14,6 +14,13 @@
 //                                    line per event on stdout. An own session ends when this
 //                                    process (and so the connection) goes away; an attached
 //                                    one lives with its MCP server.
+//                                    Delivery confirmation (daemon ≥ 0.5): subscribed with
+//                                    confirm, each pushed item has a pushId; the item counts as
+//                                    delivered only once the plugin wrote its messageId to the
+//                                    handed log (after it handed the item to the window). This
+//                                    process then sends `delivered` for it; an item whose
+//                                    messageId is already in the log is confirmed without being
+//                                    shown again (exactly once, also across restarts).
 //   call <socket>                    one request read from stdin as {op, args}; one JSON
 //                                    line {ok, result | error} on stdout.
 //
@@ -21,7 +28,7 @@
 // text or answers on a command line (stdin and the socket only).
 //
 // stdout events of `watch`:
-//   {"t":"started", sessionId, attached, agent?, label?, folder?, repo?, branch?}
+//   {"t":"started", sessionId, attached, handedLog, agent?, label?, folder?, repo?, branch?}
 //   {"t":"mode", mode: "push" | "poll"}
 //   {"t":"items", items: [...]}         daemon inbox entries, as the daemon returns them
 //   {"t":"error", code, message}        session_start refused (retried after 30 s)
@@ -32,6 +39,8 @@
 export const DAEMON_HELPER_JS = String.raw`'use strict'
 const net = require('node:net')
 const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const LABEL = /^[a-z0-9][a-z0-9-]{0,31}$/
 const out = o => {
@@ -142,8 +151,130 @@ const open = path =>
     })
   })
 
+// The handed log (one "<ms> <messageId>" per line, 0600): what this session's window already has.
+const HANDED_KEEP_MS = 24 * 3600 * 1000
+const MESSAGE_ID = /^[A-Za-z0-9:._-]{1,128}$/
+const handedLogOf = session => path.join(os.homedir(), '.config', 'talkif', 'agent', 'handed-' + session + '.log')
+
+// What the windows of this computer already have: this session's log, and the logs of the
+// sessions before it (an item moved to a new session after a restart is not shown twice).
+class Handed {
+  constructor(file) {
+    this.file = file
+    this.ids = new Set()
+    this.offset = 0
+    const keep = []
+    const now = Date.now()
+    const dir = path.dirname(file)
+    let names = []
+    try {
+      names = fs.readdirSync(dir).filter(n => /^handed-[0-9a-f-]{36}\.log$/.test(n))
+    } catch {}
+    for (const name of names) {
+      const other = path.join(dir, name)
+      let fresh = false
+      try {
+        for (const line of fs.readFileSync(other, 'utf8').split('\n')) {
+          const [at, id] = line.split(' ')
+          if (!id || !MESSAGE_ID.test(id) || !(now - Number(at) < HANDED_KEEP_MS)) continue
+          fresh = true
+          this.ids.add(id)
+          if (other === file) keep.push(line)
+        }
+        // An old session's log with nothing younger than a day is removed.
+        if (!fresh && other !== file && now - fs.statSync(other).mtimeMs > HANDED_KEEP_MS) fs.unlinkSync(other)
+      } catch {}
+    }
+    // Old entries go at start; the file stays owner-only.
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(file + '.tmp', keep.length ? keep.join('\n') + '\n' : '', { mode: 0o600 })
+      fs.renameSync(file + '.tmp', file)
+      this.offset = fs.statSync(file).size
+    } catch {}
+  }
+  // Lines the plugin appended since the last look.
+  refresh() {
+    let size
+    try {
+      size = fs.statSync(this.file).size
+    } catch {
+      return
+    }
+    if (size < this.offset) this.offset = 0
+    if (size === this.offset) return
+    const fd = fs.openSync(this.file, 'r')
+    try {
+      const buf = Buffer.alloc(size - this.offset)
+      fs.readSync(fd, buf, 0, buf.length, this.offset)
+      const text = buf.toString('utf8')
+      const end = text.lastIndexOf('\n')
+      if (end < 0) return
+      for (const line of text.slice(0, end).split('\n')) {
+        const id = line.split(' ')[1]
+        if (id && MESSAGE_ID.test(id)) this.ids.add(id)
+      }
+      this.offset += Buffer.byteLength(text.slice(0, end + 1))
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+  has(id) {
+    return this.ids.has(id)
+  }
+}
+
+// Pushed items waiting for the window: pushId → { messageId, at }. Confirmed in batches of ten.
+const confirmer = (l, session, handed) => {
+  const pending = new Map()
+  let timer
+  const flush = () => {
+    handed.refresh()
+    const now = Date.now()
+    const done = []
+    for (const [pushId, p] of pending) {
+      if (handed.has(p.messageId)) done.push(pushId)
+      // The daemon pushes it again with a new pushId after its wait: this one is gone.
+      else if (now - p.at > 35000) pending.delete(pushId)
+    }
+    for (let i = 0; i < done.length; i += 10) {
+      const batch = done.slice(i, i + 10)
+      for (const id of batch) pending.delete(id)
+      l.call('delivered', { session, pushIds: batch }, 10000).catch(() => {})
+    }
+    if (pending.size === 0) {
+      clearInterval(timer)
+      timer = undefined
+    }
+  }
+  return {
+    // The items to show; those the window already has are confirmed and left out.
+    take(items) {
+      const show = []
+      for (const item of items) {
+        const id = item && typeof item.messageId === 'string' ? item.messageId : undefined
+        const pushId = item && typeof item.pushId === 'string' && UUID.test(item.pushId) ? item.pushId : undefined
+        if (!pushId || !id) {
+          show.push(item)
+          continue
+        }
+        pending.set(pushId, { messageId: id, at: Date.now() })
+        if (!handed.has(id)) show.push(item)
+      }
+      if (pending.size && !timer) timer = setInterval(flush, 100)
+      if (pending.size) setImmediate(flush)
+      return show
+    },
+    stop() {
+      clearInterval(timer)
+      timer = undefined
+      pending.clear()
+    },
+  }
+}
+
 const started = (r, attached) => {
-  const o = { t: 'started', sessionId: r.sessionId, attached }
+  const o = { t: 'started', sessionId: r.sessionId, attached, handedLog: handedLogOf(r.sessionId) }
   for (const k of ['agent', 'label', 'folder', 'repo', 'branch']) if (typeof r[k] === 'string') o[k] = r[k]
   return o
 }
@@ -188,6 +319,7 @@ const watch = async (path, cwd, as, writeJobs) => {
       continue
     }
     let attached = false
+    let confirm
     try {
       // One window, one session: the session the window's MCP server registered, found by this
       // window's tool pid. A job window's own session id is the MCP server's to claim, never this helper's.
@@ -238,8 +370,17 @@ const watch = async (path, cwd, as, writeJobs) => {
       out(started(r, attached))
       const session = r.sessionId
       let push = true
+      const base = Object.assign({ session }, writeJobs ? {} : { writeJobs: false })
       try {
-        const s = await l.call('subscribe', Object.assign({ session }, writeJobs ? {} : { writeJobs: false }), 10000)
+        let s
+        try {
+          s = await l.call('subscribe', Object.assign({ confirm: true }, base), 10000)
+        } catch (e) {
+          // A daemon without delivery confirmation: subscribe the old way (items acked when pushed).
+          if (e.code !== 'bad_request') throw e
+          s = await l.call('subscribe', base, 10000)
+        }
+        if (s && s.confirm === true) confirm = confirmer(l, session, new Handed(handedLogOf(session)))
         const first = itemsOf(s)
         if (first.length) out({ t: 'items', items: first })
       } catch (e) {
@@ -247,6 +388,7 @@ const watch = async (path, cwd, as, writeJobs) => {
         push = false
       }
       out({ t: 'mode', mode: push ? 'push' : 'poll' })
+      const show = items => (confirm ? confirm.take(items) : items)
       if (push) {
         await drain(l, session)
         let next = l.nextPush()
@@ -270,9 +412,12 @@ const watch = async (path, cwd, as, writeJobs) => {
           }
           // Items in the push are used as they are; any other push is a doorbell.
           if (Array.isArray(m.items)) {
-            if (m.items.length) out({ t: 'items', items: m.items })
-          } else if (m.item && typeof m.item === 'object') out({ t: 'items', items: [m.item] })
-          else await drain(l, session)
+            const items = show(m.items)
+            if (items.length) out({ t: 'items', items })
+          } else if (m.item && typeof m.item === 'object') {
+            const items = show([m.item])
+            if (items.length) out({ t: 'items', items })
+          } else await drain(l, session)
         }
       } else {
         for (;;) {
@@ -284,6 +429,8 @@ const watch = async (path, cwd, as, writeJobs) => {
       // Lost or failed: reconnect below and resume (or attach to) the same session.
       if (attached) graceUntil = Date.now() + ATTACH_GRACE_MS
     }
+    // What was pushed and not confirmed comes again on the next connection (new pushIds).
+    if (confirm) confirm.stop()
     l.close()
     out({ t: 'closed' })
     await sleep(delay)
